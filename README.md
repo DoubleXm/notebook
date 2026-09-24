@@ -5,10 +5,19 @@
 ## 本地开发
 
 ```bash
-npm run dev
+npm run dev     # http://localhost:3000/docs
 ```
 
-打开 http://localhost:3000/docs 查看文档。
+## 构建与部署
+
+```bash
+npm run build   # 静态产物输出到 out/
+npm start       # 本地预览 out/
+```
+
+`next.config.mjs` 里开了 `output: 'export'`，构建产物是纯静态文件，不需要 Node 服务，直接把 `out/` 交给任意静态托管即可（Vercel、Netlify、Cloudflare Pages、GitHub Pages 都行）。
+
+部署时注意：`NEXT_PUBLIC_SITE_URL` 在构建时读取，用于生成 canonical 与 OG 的绝对地址；搜索索引 `out/api/search` 有 5.7MB，请开启 gzip/brotli（压完约 1MB）。
 
 ## 内容维护
 

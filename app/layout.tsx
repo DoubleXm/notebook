@@ -1,6 +1,7 @@
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import type { Metadata } from 'next';
 import { Intro } from '@/components/chrome/intro';
+import { StaticSearchDialog } from '@/components/chrome/search-dialog';
 import './global.css';
 
 export const metadata: Metadata = {
@@ -27,7 +28,7 @@ export default function Layout({ children }: LayoutProps<'/'>) {
         <script dangerouslySetInnerHTML={{ __html: introScript }} />
       </head>
       <body className="flex flex-col min-h-screen">
-        <RootProvider>
+        <RootProvider search={{ SearchDialog: StaticSearchDialog }}>
           {children}
           <Intro />
         </RootProvider>
