@@ -1,0 +1,12 @@
+{
+  "title": "Python",
+  "description": "环境管理、基础语法、进阶主题、自动化测试与 FastAPI",
+  "icon": "FileCode",
+  "pages": [
+    "environment",
+    "basics",
+    "advanced",
+    "automation",
+    "fastapi"
+  ]
+}

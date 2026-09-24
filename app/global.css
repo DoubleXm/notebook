@@ -1,0 +1,1306 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* ==========================================================================
+   01. The sheet — type, colour, and motion tokens
+   --------------------------------------------------------------------------
+   One idea holds the whole site together: everything is drawn on a single
+   ruled sheet. Surfaces are flat, corners are square, and every division
+   between two things is one hairline. The only saturated colour on the page is
+   the accent, and it is spent sparingly — on the mark, on the active item, and
+   on the line that draws itself when something arrives.
+
+   Motion follows the same rule. Nothing scales up and nothing springs: blocks
+   translate along their own axis and rules extend along theirs, all on one
+   decelerating curve. The same curve is exposed to Tailwind as `--ease-*` and
+   to React as `lib/motion.ts`, so a hover and an entrance written in the two
+   languages cannot drift apart.
+   ========================================================================== */
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/geist-mono-latin.woff2') format('woff2');
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+}
+
+@font-face {
+  font-family: 'Geist Mono Fallback';
+  src: local('Arial');
+  ascent-override: 74.67%;
+  descent-override: 21.92%;
+  line-gap-override: 0%;
+  size-adjust: 134.59%;
+}
+
+@theme {
+  --font-sans:
+    'Geist Mono', 'Geist Mono Fallback', ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    'Geist Mono', 'Geist Mono Fallback', ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+
+  --color-fd-primary: #964c10;
+  --color-fd-primary-foreground: #fdfbf8;
+  --color-grid: rgba(28, 22, 14, 0.05);
+
+  /* One arrival curve, one departure curve. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-expo: cubic-bezier(0.4, 0, 1, 1);
+  --ease-draw: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Fumadocs' shell motion, restated as translations. Nothing scales: a panel
+     arriving in a sheet of ruled lines should slide, not bloom. */
+  --animate-fd-fade-in: fd-fade-in 220ms var(--ease-out-expo);
+  --animate-fd-fade-out: fd-fade-out 150ms var(--ease-in-expo);
+  --animate-fd-dialog-in: fd-dialog-in 260ms var(--ease-out-expo);
+  --animate-fd-dialog-out: fd-dialog-out 150ms var(--ease-in-expo);
+  --animate-fd-popover-in: fd-popover-in 180ms var(--ease-out-expo);
+  --animate-fd-popover-out: fd-popover-out 120ms var(--ease-in-expo);
+  --animate-fd-sidebar-in: fd-sidebar-in 260ms var(--ease-out-expo);
+  --animate-fd-sidebar-out: fd-sidebar-out 190ms var(--ease-in-expo);
+}
+
+/* Backdrops only fade — a translated full-screen scrim reads as a glitch. */
+@keyframes fd-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fd-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes fd-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes fd-dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes fd-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes fd-popover-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes fd-sidebar-in {
+  from {
+    transform: translateX(var(--fd-sidebar-drawer-offset));
+  }
+}
+
+@keyframes fd-sidebar-out {
+  to {
+    transform: translateX(var(--fd-sidebar-drawer-offset));
+  }
+}
+
+/* The drafting grid lands with the page: one quiet fade, so the largest line
+   surface on the sheet appears instead of blinking on. Reduced-motion users
+   skip it via the global rule that flattens every animation. */
+@keyframes grid-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Light is the sheet's home key, and it was the weaker of the two: the accent
+   sat at 4.3:1 on the paper, the muted voice at 5.3:1, and the whole palette
+   was warm enough that body text read as faded rather than as ink. The accent
+   is deepened until it clears AA on small text, the muted voice is pushed to
+   the dark end of the same warm grey so it is legible without becoming a
+   second foreground, and the paper is cooled a step toward neutral so the
+   hairlines and the type stop sharing a tint. */
+:root {
+  --color-fd-background: #fbfaf8;
+  --color-fd-foreground: #14120e;
+  --color-fd-muted: #f2f0ec;
+  --color-fd-muted-foreground: #5c564d;
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #16140f;
+  --color-fd-card: #f3f1ed;
+  --color-fd-card-foreground: #14120e;
+  --color-fd-border: rgba(24, 19, 12, 0.15);
+  --color-fd-secondary: #f2f0ec;
+  --color-fd-secondary-foreground: #14120e;
+  --color-fd-accent: rgba(150, 76, 16, 0.1);
+  --color-fd-accent-foreground: #14120e;
+  --color-fd-ring: #964c10;
+  --color-fd-overlay: rgba(18, 16, 12, 0.3);
+}
+
+.dark {
+  --color-fd-background: #0c0c0d;
+  --color-fd-foreground: #d5d2ce;
+  --color-fd-muted: #161617;
+  --color-fd-muted-foreground: #8b877f;
+  --color-fd-popover: #121213;
+  --color-fd-popover-foreground: #e2dfdb;
+  --color-fd-card: #111112;
+  --color-fd-card-foreground: #d5d2ce;
+  --color-fd-border: rgba(233, 228, 219, 0.14);
+  --color-fd-primary: #d99a55;
+  --color-fd-primary-foreground: #1a1410;
+  --color-fd-secondary: #17171a;
+  --color-fd-secondary-foreground: #d5d2ce;
+  --color-fd-accent: rgba(217, 154, 85, 0.12);
+  --color-fd-accent-foreground: #e2dfdb;
+  --color-fd-ring: #d99a55;
+  --color-fd-overlay: rgba(0, 0, 0, 0.62);
+  --color-grid: rgba(233, 228, 219, 0.045);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  font-family:
+    'Geist Mono', 'Geist Mono Fallback', 'PingFang SC', 'Microsoft YaHei',
+    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-synthesis: none;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-variant-ligatures: none;
+}
+
+/* ==========================================================================
+   02. The first-load curtain
+   --------------------------------------------------------------------------
+   Rendered into the HTML on every request so it can never flash in late; the
+   entry script in `app/layout.tsx` decides whether it actually plays, by
+   tagging `html[data-intro]` before the body is parsed. `Intro` drives the
+   timeline and clears the tag when it is done.
+   ========================================================================== */
+
+[data-intro-overlay] {
+  display: none;
+}
+
+html[data-intro='play'] [data-intro-overlay] {
+  display: block;
+}
+
+/* ==========================================================================
+   03. The home sheet
+   ========================================================================== */
+
+[data-home-frame] {
+  background: var(--color-fd-background);
+}
+
+/* The drafting grid behind the masthead. One paint, faded out by the time it
+   reaches the index, so it reads as paper rather than as a texture. */
+[data-home-grid] {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+  background-position: -1px -1px;
+  background-size: 60px 60px;
+  mask-image: linear-gradient(to bottom, #000 0%, #000 42%, transparent 94%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 42%,
+    transparent 94%
+  );
+  animation: grid-appear 1.2s var(--ease-out-expo) 0.5s both;
+}
+
+[data-hero-mark] svg {
+  transition: transform 520ms var(--ease-out-expo);
+  transform-origin: center;
+}
+
+[data-hero-mark]:hover svg {
+  transform: translateY(-6px) rotate(-2deg);
+}
+
+/* --- The ruled index ------------------------------------------------------ */
+
+/* Each cell displays its category icon and a short description. */
+[data-ledger-row] {
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
+  row-gap: 0.8rem;
+  min-height: 9rem;
+  height: 100%;
+  padding: 1.5rem;
+  position: relative;
+}
+
+[data-ledger-item] {
+  --scan-x: 0px;
+  transition: background-color 240ms ease;
+}
+
+[data-ledger-item]:is(:hover, :focus-within) {
+  background: color-mix(in srgb, var(--color-fd-primary) 4%, var(--color-fd-background));
+}
+
+[data-ledger-selection] {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) top left / 15px 1px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) top left / 1px 15px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) top right / 15px 1px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) top right / 1px 15px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) bottom left / 15px 1px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) bottom left / 1px 15px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) bottom right / 15px 1px no-repeat,
+    linear-gradient(var(--color-fd-primary), var(--color-fd-primary)) bottom right / 1px 15px no-repeat;
+  transition: opacity 220ms ease;
+}
+
+[data-ledger-selection]::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 48px;
+  height: 1px;
+  background: var(--color-fd-primary);
+  transform: translateX(var(--scan-x));
+  transition: transform 180ms var(--ease-out-expo);
+}
+
+[data-ledger-item]:not(:hover) [data-ledger-selection]::after {
+  display: none;
+}
+
+[data-ledger-item]:is(:hover, :focus-within) [data-ledger-selection] {
+  opacity: 1;
+}
+
+[data-ledger-row]:focus-visible {
+  outline: 1px solid var(--color-fd-ring);
+  outline-offset: -3px;
+}
+
+[data-cell] {
+  min-width: 0;
+}
+
+[data-cell='heading'] {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: color 240ms ease;
+}
+
+[data-cell='title'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-cell='icon'] {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-fd-muted-foreground);
+  transition: color 240ms ease;
+}
+
+[data-cell='title'] {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+
+[data-cell='icon'] svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  stroke-width: 1.35;
+}
+
+[data-cell='description'] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--color-fd-muted-foreground);
+  transition: color 240ms ease;
+}
+
+[data-ledger-item]:hover [data-cell='icon'],
+[data-ledger-item]:focus-within [data-cell='icon'],
+[data-ledger-item]:hover [data-cell='heading'],
+[data-ledger-item]:focus-within [data-cell='heading'] {
+  color: var(--color-fd-primary);
+}
+
+[data-ledger-item]:hover [data-cell='description'],
+[data-ledger-item]:focus-within [data-cell='description'] {
+  color: var(--color-fd-foreground);
+}
+
+/* A blank cell only draws the two rules that close the grid, so the field ends
+   on a full row however the count divides. It is shorter than a real cell —
+   it is there to complete the frame, not to reserve space. */
+[data-ledger-blank] {
+  min-height: 2.75rem;
+}
+
+@media (min-width: 40rem) and (max-width: 63.999rem) {
+  [data-ledger-item]:nth-child(2n),
+  [data-ledger-blank]:nth-child(2n) {
+    border-inline-end-width: 0;
+  }
+}
+
+@media (min-width: 64rem) {
+  [data-ledger-item]:nth-child(4n),
+  [data-ledger-blank]:nth-child(4n) {
+    border-inline-end-width: 0;
+  }
+}
+
+/* --- Second-level collections -------------------------------------------- */
+
+/* A register of destinations: the name opens the line, the arrow closes it,
+   and the rule underneath redraws in the accent as the line is entered. */
+[data-branch] {
+  position: relative;
+}
+
+[data-branch-link] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'title arrow';
+  align-items: center;
+  gap: 1rem;
+  min-height: 3.6rem;
+  padding: 0.9rem 0.1rem;
+}
+
+[data-branch-title] {
+  grid-area: title;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 200ms ease;
+}
+
+[data-branch-arrow] {
+  grid-area: arrow;
+  transition: color 200ms ease, transform 260ms var(--ease-out-expo);
+}
+
+[data-branch]:is(:hover, :focus-within) :is([data-branch-title], [data-branch-arrow]) {
+  color: var(--color-fd-primary);
+}
+
+[data-branch]:is(:hover, :focus-within) [data-branch-arrow] {
+  transform: translate(2px, -2px);
+}
+
+[data-branch-mark] {
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--color-fd-primary);
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 380ms var(--ease-out-expo);
+}
+
+[data-branch]:hover [data-branch-mark],
+[data-branch]:focus-within [data-branch-mark] {
+  transform: scaleX(1);
+}
+
+/* ==========================================================================
+   04. The documentation shell
+   --------------------------------------------------------------------------
+   The same sheet, at column scale — but with fewer rules, not more. The outer
+   frame is the only boundary the layout needs: the sidebar sits on the page,
+   and the article sits on the page, separated by space rather than by rails.
+   Fumadocs draws its own borders on those seams, so they are turned off here.
+   ========================================================================== */
+
+#nd-docs-layout {
+  --fd-layout-width: 88rem;
+  max-width: 96rem;
+  margin-inline: auto;
+  background: var(--color-fd-background);
+}
+
+/* The sidebar is a column of the page: no rule on either side of it. */
+#nd-sidebar,
+#nd-sidebar-mobile {
+  border-inline-width: 0;
+  background: var(--color-fd-background);
+}
+
+#nd-subnav {
+  border-bottom: 1px solid var(--color-fd-border);
+  background: color-mix(in srgb, var(--color-fd-background) 86%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.dark #nd-sidebar,
+.dark #nd-sidebar-mobile {
+  /* neutral.css lightens these inside the sidebar; on this sheet the sidebar is
+     the page, so the tokens stay where the rest of the site put them. */
+  --color-fd-muted: var(--color-fd-background);
+  --color-fd-secondary: var(--color-fd-muted);
+  --color-fd-muted-foreground: #8b877f;
+}
+
+/* ==========================================================================
+   05. Navigation
+   --------------------------------------------------------------------------
+   Selection is carried by colour, by a tick that draws itself, and by a short
+   translate along the reading axis. Never by a filled block.
+   ========================================================================== */
+
+/* The wordmark: a drawn square, the name, and nothing else. */
+#nd-sidebar a[href='/'],
+#nd-sidebar-mobile a[href='/'] {
+  gap: 0.6rem;
+  letter-spacing: -0.03em;
+}
+
+#nd-sidebar a[href='/']::before,
+#nd-sidebar-mobile a[href='/']::before {
+  content: '';
+  width: 0.4rem;
+  height: 0.4rem;
+  background: var(--color-fd-primary);
+}
+
+#nd-sidebar :is(a, button),
+#nd-sidebar-mobile :is(a, button) {
+  border-radius: 0;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    padding-inline-start 300ms var(--ease-out-expo);
+}
+
+#nd-sidebar a,
+#nd-sidebar-mobile a {
+  position: relative;
+}
+
+#nd-sidebar :is(a, button)[data-active='true'],
+#nd-sidebar-mobile :is(a, button)[data-active='true'] {
+  background: transparent;
+  color: var(--color-fd-primary);
+}
+
+/* A tinted block behind the current item is enough of a marker on its own —
+   nothing else about the row changes, so the label stays exactly where it is. */
+#nd-sidebar a[data-active='true'],
+#nd-sidebar-mobile a[data-active='true'] {
+  background: color-mix(in srgb, var(--color-fd-primary) 8%, transparent);
+}
+
+/* Fumadocs ships its own active marker for nested items; the tint replaces it. */
+#nd-sidebar :is(a, button)::before,
+#nd-sidebar-mobile :is(a, button)::before {
+  content: none;
+}
+
+#nd-sidebar :is(a, button):hover,
+#nd-sidebar-mobile :is(a, button):hover {
+  background: color-mix(in srgb, var(--color-fd-primary) 5%, transparent);
+  color: var(--color-fd-foreground);
+}
+
+#nd-sidebar a[data-active='true']:hover,
+#nd-sidebar-mobile a[data-active='true']:hover {
+  background: color-mix(in srgb, var(--color-fd-primary) 11%, transparent);
+  color: var(--color-fd-primary);
+}
+
+#nd-sidebar :is(a, button):focus-visible,
+#nd-sidebar-mobile :is(a, button):focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--color-fd-ring);
+  outline-offset: 2px;
+}
+
+/* With no rule between columns, a heading row needs weight rather than a line
+   above it to separate itself from the items. */
+#nd-sidebar p,
+#nd-sidebar-mobile p {
+  margin-top: 1.8rem;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+#nd-sidebar p:first-child,
+#nd-sidebar-mobile p:first-child {
+  margin-top: 0;
+}
+
+#nd-sidebar button[data-panel-open],
+#nd-sidebar-mobile button[data-panel-open] {
+  color: var(--color-fd-foreground);
+}
+
+/* Small controls in the sidebar chrome. */
+[data-search-full],
+[data-search] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 260ms var(--ease-out-expo);
+}
+
+[data-search-full] {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+[data-search-full]:hover,
+[data-search]:hover {
+  color: var(--color-fd-foreground);
+  border-color: var(--color-fd-primary);
+  background: color-mix(in srgb, var(--color-fd-primary) 5%, transparent);
+  transform: translateX(2px);
+}
+
+[data-search-full] kbd,
+[data-search] kbd {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+}
+
+/* The section switcher that sits under the search field. It arrives filled
+   (bg-fd-secondary/50 + border + rounded-lg) and reads as a selected chip next
+   to the drawn controls above it, so it is squared off and emptied to match —
+   it is a control, not the current page. */
+#nd-sidebar [aria-haspopup='dialog'],
+#nd-sidebar-mobile [aria-haspopup='dialog'] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+  color: var(--color-fd-muted-foreground);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+#nd-sidebar [aria-haspopup='dialog']:hover,
+#nd-sidebar-mobile [aria-haspopup='dialog']:hover,
+#nd-sidebar [aria-haspopup='dialog'][data-popup-open],
+#nd-sidebar-mobile [aria-haspopup='dialog'][data-popup-open] {
+  border-color: var(--color-fd-border);
+  background: color-mix(in srgb, var(--color-fd-primary) 5%, transparent);
+  color: var(--color-fd-foreground);
+}
+
+/* The tab's icon arrives in its own filled, rounded plate. */
+#nd-sidebar [aria-haspopup='dialog'] div div,
+#nd-sidebar-mobile [aria-haspopup='dialog'] div div {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+}
+
+#nd-sidebar div:has(> [data-theme-toggle]),
+#nd-sidebar-mobile div:has(> [data-theme-toggle]) {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+}
+
+[data-theme-toggle] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+  transition:
+    border-color 160ms ease,
+    transform 260ms var(--ease-out-expo);
+}
+
+[data-theme-toggle]:hover {
+  border-color: var(--color-fd-primary);
+  transform: translateY(-1px);
+}
+
+[data-theme-toggle] > svg {
+  border-radius: 0 !important;
+  background: transparent !important;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease;
+}
+
+[data-theme-toggle] > svg.bg-fd-accent {
+  background: color-mix(
+    in srgb,
+    var(--color-fd-primary) 12%,
+    transparent
+  ) !important;
+  color: var(--color-fd-primary);
+}
+
+/* --- Table of contents ---------------------------------------------------- */
+
+#toc-title {
+  display: flex;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+#nd-toc a {
+  border-radius: 0;
+  text-underline-offset: 0.25em;
+  transition:
+    color 160ms ease,
+    transform 260ms var(--ease-out-expo);
+}
+
+#nd-toc a:hover {
+  transform: translateX(2px);
+}
+
+#nd-toc a[data-active='true'] {
+  color: var(--color-fd-primary);
+}
+
+#nd-toc a[data-active='true']:hover {
+  color: var(--color-fd-primary);
+}
+
+#nd-toc [class*='rounded'] {
+  border-radius: 0;
+}
+
+/* ==========================================================================
+   06. The article
+   ========================================================================== */
+
+#nd-page {
+  max-width: 880px;
+  padding-block: 2.75rem 5rem;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+#nd-page .prose {
+  font-size: 13px;
+}
+
+#nd-page .prose :not(pre) > code {
+  font-size: 12.5px;
+}
+
+#nd-page .prose pre,
+#nd-page .prose .fd-scroll-container {
+  font-size: 13px;
+}
+
+#nd-page .prose table {
+  font-size: 12.5px;
+}
+
+#nd-page :is(a, button, summary) {
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 260ms var(--ease-out-expo);
+}
+
+/* Breadcrumbs sit in the micro-label voice, like every other coordinate. */
+#nd-page > div.flex.items-center.gap-1\.5 {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/* The article is a flex column with its own `gap-4`, so the description's
+   shipped `mb-8` stacked on top of it and left the toolbar floating a line
+   below the lede. The gap does the spacing here; the margin only pads the
+   block when it is the last thing before the body. */
+#nd-page [data-page-toolbar] {
+  margin-top: 0;
+}
+
+#nd-page p.mb-8 {
+  margin-bottom: 0;
+}
+
+/* Section headings open with a drawn rule, the way each band on the home page
+   does. The heading anchor fumadocs injects must not pick up link colour. */
+#nd-page .prose :is(h1, h2, h3, h4) {
+  letter-spacing: -0.025em;
+}
+
+#nd-page .prose h2 {
+  margin-top: 2.9rem;
+  padding-top: 1.15rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+#nd-page .prose :is(h1, h2, h3, h4) > a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: inherit;
+}
+
+#nd-page .prose blockquote {
+  border-inline-start: 1px solid var(--color-fd-primary);
+  padding-inline-start: 1rem;
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose :is(ul, ol) {
+  font-size: 12.5px;
+}
+
+/* --- Cards ---------------------------------------------------------------- */
+
+/* A run of cards in an article is one ruled table, not a field of boxes: each
+   cell draws only the rules it shares with its neighbours, so a short row ends
+   on the page rather than on a grey hole. */
+[data-line-cards] {
+  margin-block: 1.25rem;
+  border-bottom: 1px solid var(--color-fd-border);
+}
+
+[data-line-card] {
+  border-top: 1px solid var(--color-fd-border);
+}
+
+@media (min-width: 48rem) {
+  [data-line-card]:not(:nth-child(2n + 1)) {
+    border-inline-start: 1px solid var(--color-fd-border);
+  }
+}
+
+/* Below the two-column breakpoint every cell is a full row, so the inline rule
+   would only double the one above it. */
+@media (max-width: 47.999rem) {
+  [data-line-card] {
+    border-inline-start: 0;
+  }
+}
+
+/* The map uses whitespace to group destinations; rules belong to entries only. */
+#nd-page .prose [data-note-map] {
+  margin-top: 3rem;
+}
+
+#nd-page:has([data-note-map]) .prose h2 {
+  border-top: 0;
+}
+
+#nd-page .prose [data-map-group] + [data-map-group] {
+  margin-top: 3.5rem;
+}
+
+#nd-page .prose [data-map-group] > h2 {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+#nd-page .prose [data-map-group] [data-line-cards] {
+  margin: 0;
+  border-bottom: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#nd-page .prose [data-map-group] [data-line-card] {
+  min-height: 6.5rem;
+  padding: 1rem 1rem 1rem 0;
+  border-top: 1px solid var(--color-fd-border);
+  border-inline-start: 0;
+  background: transparent;
+}
+
+#nd-page .prose [data-map-group] [data-line-card]:hover,
+#nd-page .prose [data-map-group] [data-line-card]:focus-visible {
+  background: transparent;
+}
+
+#nd-page .prose [data-map-group] [data-line-card] h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+#nd-page .prose [data-map-group] [data-line-card] p {
+  margin: 0.4rem 0 0;
+}
+
+#nd-page .prose [data-map-group] [data-line-card-mark] {
+  left: 0;
+}
+
+@media (min-width: 48rem) {
+  #nd-page .prose [data-map-group] [data-line-cards] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #nd-page .prose [data-map-group] [data-line-card]:nth-child(2n) {
+    padding-left: 1.25rem;
+  }
+
+  #nd-page .prose [data-map-group] [data-line-card]:nth-child(2n) [data-line-card-mark] {
+    left: 1.25rem;
+  }
+}
+
+#nd-page .prose hr {
+  border-color: var(--color-fd-border);
+}
+
+/* --- Images --------------------------------------------------------------- */
+
+/* An image belongs to the sheet, so it is square like every other block on it.
+   Fumadocs ships its own image component with a radius; the zoom wrapper
+   replaces that component, and this keeps the corner square if it ever
+   changes underneath us. */
+#nd-page .prose img {
+  border-radius: 0;
+}
+
+/* Fumadocs hides both zoom controls outright, which leaves the preview
+   mouse-only: the click is bound to the image, so nothing is left in the tab
+   order. They stay out of sight but reachable, and the frame each one acts on
+   carries the ring instead of the hidden button. The `html` prefix is what
+   lifts these above the shipped `display: none` — global.css loads first, so
+   equal specificity would lose. */
+html [data-rmiz-btn-zoom],
+html [data-rmiz-btn-unzoom] {
+  display: block;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+html [data-rmiz]:has([data-rmiz-btn-zoom]:focus-visible) [data-rmiz-content] {
+  outline: 1px solid var(--color-fd-ring);
+  outline-offset: 3px;
+}
+
+html
+  [data-rmiz-modal-content]:has([data-rmiz-btn-unzoom]:focus-visible)
+  [data-rmiz-modal-img] {
+  outline: 1px solid var(--color-fd-ring);
+  outline-offset: 3px;
+}
+
+/* The preview opens on the page's own paper and travels on the sheet's own
+   curve, so it reads as the note coming forward rather than as a modal. */
+html [data-rmiz-modal-img] {
+  transition: transform 320ms var(--ease-out-expo);
+}
+
+/* --- Toolbar ------------------------------------------------------------- */
+
+/* The page toolbar is composed by the app; it is tagged rather than matched by
+   position, because a route-keyed wrapper sits above it. */
+[data-page-toolbar] button {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 220ms var(--ease-out-expo);
+}
+
+[data-page-toolbar] button:hover {
+  border-color: var(--color-fd-primary);
+  background: color-mix(in srgb, var(--color-fd-primary) 5%, transparent);
+  transform: translateY(-1px);
+}
+
+/* --- Code ----------------------------------------------------------------- */
+
+/* A code block is the reading surface, not a card on top of it: it keeps the
+   page's own paper and draws only its hairline frame. The one tinted surface
+   left in the article is the callout, so the two never compete and the accent
+   stays the only saturated thing on screen. */
+#nd-page .shiki,
+#nd-page .prose :has(> [role='tablist']):has(.shiki),
+#nd-page .prose :has(> [role='tablist']):has([role='tabpanel'] > .shiki) {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: var(--color-fd-background);
+  box-shadow: none;
+}
+
+#nd-page .prose :has(> [role='tablist']):has(.shiki) > [role='tabpanel'] {
+  border-radius: 0;
+}
+
+#nd-page .shiki button {
+  border-radius: 0;
+  border: 1px solid var(--color-fd-border);
+  background: var(--color-fd-popover);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease;
+}
+
+#nd-page .shiki button:hover {
+  border-color: var(--color-fd-primary);
+  color: var(--color-fd-primary);
+}
+
+#nd-page .shiki figcaption {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/* A block with a filename draws its own header row: the name sits on the
+   hairline that separates it from the code, and the current file is marked by
+   a full-height tick rather than by the accent pill Fumadocs ships. The code
+   behind it stays on the same surface as a block without a header, so the two
+   read as one component. */
+#nd-page .shiki > div.flex.items-center.gap-2 {
+  height: auto;
+  gap: 0;
+  padding: 0 0.25rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  background: transparent;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+#nd-page .shiki > div.flex.items-center.gap-2 > figcaption {
+  padding: 0.55rem 0.5rem;
+  letter-spacing: 0.06em;
+}
+
+/* Tabbed blocks: the tab row is the header, so it takes the same treatment. */
+#nd-page .shiki [role='tablist'] {
+  gap: 0;
+  padding: 0 0.25rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  background: transparent;
+}
+
+#nd-page .shiki [role='tablist'] > button {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.55rem 0.5rem;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: var(--color-fd-muted-foreground);
+  transition: color 160ms ease;
+}
+
+#nd-page .shiki [role='tablist'] > button:hover {
+  color: var(--color-fd-foreground);
+}
+
+#nd-page .shiki [role='tablist'] > button[data-active] {
+  color: var(--color-fd-foreground);
+}
+
+/* The shipped underline is an inset accent span under the label; replace it
+   with a hairline drawn along the bottom edge of the tab, revealed by a
+   downward wipe as the tab activates. */
+#nd-page .shiki [role='tablist'] > button > div {
+  inset: 0;
+  height: auto;
+  background: var(--color-fd-primary);
+  clip-path: inset(100% 0 0 0);
+  transition: clip-path 260ms var(--ease-out-expo);
+}
+
+#nd-page .shiki [role='tablist'] > button[data-active] > div {
+  clip-path: inset(calc(100% - 1px) 0 0 0);
+}
+
+/* --- Callouts ------------------------------------------------------------- */
+
+/* Same hairline box as everything else, with the severity carried by a solid
+   bar and the icon rather than by a tinted surface. */
+#nd-page .prose [style*='--callout-color'] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: var(--color-fd-card);
+  box-shadow: none;
+  padding-inline-start: 0.9rem;
+}
+
+#nd-page .prose [style*='--callout-color'] > div:first-child {
+  border-radius: 0;
+  width: 2px;
+}
+
+/* --- Pagination ----------------------------------------------------------- */
+
+#nd-page > div.grid.gap-4 {
+  margin-top: 1.5rem;
+}
+
+#nd-page > div.grid.gap-4 > a[href] {
+  position: relative;
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    border-color 200ms ease,
+    background-color 200ms ease,
+    transform 300ms var(--ease-out-expo);
+}
+
+#nd-page > div.grid.gap-4 > a[href]::before,
+#nd-page > div.grid.gap-4 > a[href]::after {
+  position: absolute;
+  width: 18px;
+  height: 1px;
+  background: var(--color-fd-primary);
+  content: '';
+  pointer-events: none;
+  transform: scaleX(0);
+  transition: transform 320ms var(--ease-out-expo);
+}
+
+#nd-page > div.grid.gap-4 > a[href]::before {
+  top: 0;
+  left: 0;
+  transform-origin: left center;
+}
+
+#nd-page > div.grid.gap-4 > a[href]::after {
+  right: 0;
+  bottom: 0;
+  transform-origin: right center;
+}
+
+#nd-page > div.grid.gap-4 > a[href]:hover {
+  border-color: var(--color-fd-border);
+  background: color-mix(in srgb, var(--color-fd-primary) 4%, transparent);
+  transform: translateY(-2px);
+}
+
+#nd-page > div.grid.gap-4 > a[href]:hover::before,
+#nd-page > div.grid.gap-4 > a[href]:hover::after {
+  transform: scaleX(1);
+}
+
+#nd-page > div.grid.gap-4 > a[href] svg {
+  transition: transform 260ms var(--ease-out-expo);
+}
+
+#nd-page > div.grid.gap-4 > a[href]:first-child:hover svg {
+  transform: translateX(-3px);
+}
+
+#nd-page > div.grid.gap-4 > a[href]:last-child:hover svg {
+  transform: translateX(3px);
+}
+
+/* ==========================================================================
+   07. Overlays
+   ========================================================================== */
+
+/* A popover is part of the sheet it opened from: it keeps the page's own
+   paper, squared to the hairline, instead of the tinted, blurred card that
+   Fumadocs ships. The full overlays below are the only floating surfaces that
+   get a lift. */
+div[data-side] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: var(--color-fd-background);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+div[data-side] :is(a, button, [role='menuitem']) {
+  border-radius: 0;
+}
+
+#fd-search-dialog-content,
+[role='dialog'][data-side] {
+  border-radius: 0;
+  border-color: var(--color-fd-border);
+  background: var(--color-fd-popover);
+  backdrop-filter: none;
+  box-shadow:
+    0 1px 2px hsl(0 0% 0% / 8%),
+    0 18px 48px hsl(0 0% 0% / 16%);
+}
+
+#fd-search-dialog-content [data-fd-search-dialog-input] {
+  font-size: 13px;
+}
+
+#fd-search-dialog-content :is(button, kbd),
+[role='dialog'][data-side] * {
+  border-radius: 0;
+}
+
+[role='dialog'][data-side] :is(a, button, [role='menuitem']) {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    transform 260ms var(--ease-out-expo);
+}
+
+[role='dialog'][data-side] :is(a, [role='menuitem']):hover,
+[role='dialog'][data-side] [role='menuitem'][data-highlighted] {
+  transform: translateX(2px);
+}
+
+[role='dialog'][data-side] [data-active='true'] {
+  background: transparent;
+  color: var(--color-fd-primary);
+}
+
+/* The category popup is portaled outside the sidebar; target its actual popup. */
+.fd-scroll-container:has(> a[href] > svg) {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0;
+  background: var(--color-fd-background);
+  color: var(--color-fd-foreground);
+  backdrop-filter: none;
+  box-shadow: 0 12px 30px rgba(24, 19, 12, 0.12);
+}
+
+.fd-scroll-container:has(> a[href] > svg) > a[href] {
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-fd-foreground);
+}
+
+.fd-scroll-container:has(> a[href] > svg) > a[href]:hover {
+  background: color-mix(in srgb, var(--color-fd-primary) 6%, var(--color-fd-background));
+}
+
+.fd-scroll-container:has(> a[href] > svg) > a[href]:focus-visible {
+  background: color-mix(in srgb, var(--color-fd-primary) 6%, var(--color-fd-background));
+  outline: 1px solid var(--color-fd-ring);
+  outline-offset: -1px;
+}
+
+.fd-scroll-container:has(> a[href] > svg) > a[href]:has(> svg:not(.invisible)) {
+  color: var(--color-fd-primary);
+}
+
+/* ==========================================================================
+   08. Browser surfaces
+   ========================================================================== */
+
+::selection {
+  background: color-mix(in srgb, var(--color-fd-primary) 24%, transparent);
+}
+
+body {
+  caret-color: var(--color-fd-primary);
+}
+
+* {
+  scrollbar-color: var(--color-fd-border) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 0;
+  background: var(--color-fd-border);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html > body[data-scroll-locked] {
+  --removed-body-scroll-bar-size: 0px !important;
+  margin-right: 0 !important;
+}
+
+/* The whole sheet is one gesture repeated; with motion turned down it should
+   simply be there. */
+@media (prefers-reduced-motion: reduce) {
+  [data-hero-mark]:hover svg {
+    transform: none;
+  }
+
+  [data-ledger-selection]::after {
+    transition: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

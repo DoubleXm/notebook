@@ -1,0 +1,862 @@
+---
+title: "Agent 中间件"
+description: Agent 生命周期钩子、内置中间件与自定义扩展
+---
+
+在 Agent 执行过程中的各个环节暴露出来的钩子函数，使用中间件可以控制和定制 Agent 的执行过程、输出以及增加健壮性（添加一些业务相关的逻辑，比如日志）。
+
+此外中间件还能把一些通用的与业务关系不大的业务抽离出来，让 Agent 具有更好的复用性；带有钩子函数的 Agent 执行逻辑
+
+## 内置中间件
+
+在 Langchain 中也提供了一系列的内置中间件；
+
+```py
+from langchain.agents.middleware import SummarizationMiddleware, ...
+from deepagents.middleware.subagents import SubAgentMiddleware, ...
+```
+
+*   `Summarization` 对历史消息进行摘要总结（避免上下文爆炸）
+*   `HumanInTheLoop` 暂停执行、等待人工审核
+*   `ModelCallLimit | ToolCallLimit` 限制模型或工具的执行次数
+*   `ModelFalback` 当主模型发生故障时，自动回退到备用模型。
+*   `PIIDetetion` 敏感信息检测转码
+*   `TodoList` 让 Agent 做事前先列计划
+*   `LLMToolSelector` 当工具太多时，用子模型筛选最相关的几个工具
+*   `ToolRetry | ModelRetry` 通过指数退避算法，设置工具或模型失败时的重试策略
+*   `LLMToolEmulator` 当工具未完善时，模拟工具执行 mock 方案
+*   `ContextEditing` 上下文编辑，可以控制最终给模型哪些消息
+*   `FileSearch` 基于 Glob 和 Grep 检索工具给 Agent 赋予本地文件检索和分析的
+*   `FileSystem` 为代理提供文件系统，用于存储上下文和长期记忆；来源于 DeepAgents
+*   `Subagent` 创建子 Agent 来源于 DeepAgents
+
+### SummarizationMiddleware
+
+对历史消息进行摘要总结、有压缩上下文的效果；
+
+*   `model` 摘要模型，字符串或者 `init_chat_model` 返回值
+*   `trigger` 触发条件，列表嵌套元组
+*   `messages` 摘要的消息树
+*   `tokens` 摘要 token 数量
+*   `fraction` 摘要的百分比模型 token 上限 \* 系数百分比，浮点数
+*   `keep` 与 `trigger` 参数一致，但是仅接受一个值，需要保留的内容
+*   `summary_prompt` 总结消息的 prompt
+*   `trim_tokens_to_summarize` 总结调用的最大值，超过则会被修剪
+
+```py
+model = init_chat_model(
+    "openai:kimi-k2.6", 
+    base_url=os.environ.get("OPENAI_BASE_URL"),
+    # 手动设置模型最大 token 数
+    profile={"max_input_tokens": 262144}
+)
+
+messages  = [
+  HumanMessage("你好派大星，我是海绵宝宝"),
+  AIMessage("你好海绵宝宝"),
+  HumanMessage("我们一起去抓水母吧~"),
+  AIMessage("等等我，海绵宝宝！我的水母网... "),
+  HumanMessage("今天工作日，我要去蟹老板那里打工了~")
+]
+agent = create_agent(
+    model,
+    middleware=[
+      SummarizationMiddleware(
+        model,
+        trigger=[
+            ("messages", 2),
+            # max token 的 10% 触发
+            # 有些模型 langchain 无法知道最大 token 数，所以要手动设置
+            ("fraction", 0.1),
+            ("tokens", 100)
+        ],
+        # 和 trigger 配合，需要保留的消息数
+        keep=("messages", 2),
+        # {messages} 一定要有，不然模型也不知道你想摘要什么内容
+        summary_prompt="用中文繁体总结消息内容 \n{messages}"
+      )
+    ]
+)
+result = agent.invoke({"messages": messages})
+
+for message in result["messages"]:
+    print(message.pretty_print())
+```
+
+### HumanInTheLoopMiddleware
+
+中断 Agent 调用工具的过程，审核后再执行；
+
+*   `interrupt_on` 审核动作，字段类型
+    *   `<tool_name>: bool` True 表示 `[approve, reject, edit]` False 表示跳过
+    *   `<tool_name>: { allowed_decisions: [approve, reject, edit], description: xxx }` 可以直接通过数组指定模型和描述
+*   `description_prefix` 中断的描述信息，没有内部 `description` 的优先级高
+
+```py
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+@tool
+def get_weather(city: str, is_forcast=False) -> str:
+    """获取指定城市天气预报"""
+    return f"{city} 是晴天 {'明天有雨' if is_forcast else '明天晴天'}"
+
+agent = create_agent(
+    model,
+    tools=[get_weather],
+    middleware=[
+      HumanInTheLoopMiddleware(
+        interrupt_on={
+          # "get_weather": True,
+          "get_weather": {
+            "allowed_decisions": ["edit"],
+            "description": "优先级更高的中断描述信息"
+          }
+        },
+        description_prefix="工具调用中断~"
+      )
+    ],
+    # 保证中断和回复在一个会话中，所以要有记忆
+    checkpointer=InMemorySaver()
+)
+
+config = {"configurable": {"thread_id": "1"}}
+result = agent.invoke({"messages": [HumanMessage("上海的天气怎么样？")]}, config=config)
+
+# 被中断响应中，拥有 __interrupt__ 属性，数组类型
+# rprint(result["__interrupt__"])
+# [
+#     Interrupt(
+#         value={
+#             'action_requests': [{'name': 'get_weather', 'args': {'city': '上海'}, 'description': '优先级更高的中断描述'}],
+#             'review_configs': [{'action_name': 'get_weather', 'allowed_decisions': ['edit']}]
+#         },
+#         id='481eead7a0f73bd98af8892baa7e7be5'
+#     )
+# ]
+
+if result["__interrupt__"]:
+    # 通过 command 回复执行
+    resume_result = agent.invoke(
+        Command(resume={
+            "decisions": [
+              # 编辑的话，需要指定 edited_action 从新调用 tool
+              # 实际就是参考 result["__interrupt__"][0].value["action_requests"] 中的内容调整参数从新调用一下
+              {
+                  "type": "edit", 
+                  "edited_action": {
+                      "name": "get_weather",
+                      "args": {"city": "上海", "is_forcast": False}
+                  }
+              }
+              # 通过
+              {"type": "approve"}
+            ]
+        }),
+        config=config
+    )
+
+    rprint(resume_result)
+```
+
+### PIIMiddleware
+
+敏感信息加密
+
+*   `pii_type` 需要被加密的数据类型，支持自定义；`"email" | "credit_card" | "url" | "ip" | "mac_address"`
+*   `strategy` 加密方案
+    *   `redact` 默认值，替换为 `[REDACTED_EMAIL]` 常量
+    *   `mask` 部分屏蔽，显示最后几个字符
+    *   `hash` 转换为 hash
+    *   `block` 直接抛异常
+*   `detector` 自定义检测函数正则字符串或者函数
+*   `apply_to_input` 模型调用前检查 默认 True
+*   `apply_to_output` 模型调用后检查 默认 False
+*   `apply_to_tool_results` 工具执行后检查 默认 False
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+        PIIMiddleware("email", strategy="redact"),
+        PIIMiddleware("url", strategy="hash"),
+        PIIMiddleware("credit_card", strategy="mask"),
+        PIIMiddleware("mac_address", strategy="mask"),
+        PIIMiddleware("ip", strategy="mask")
+    ],
+)
+
+result = agent.invoke({
+  "messages": HumanMessage("""这是什么邮箱 1234567890@qq.com
+                            这是什么 mac 地址 02:4A:7C:9E:3F:1B
+                            这是什么 ip 192.168.0.1
+                            这是什么银行卡号 6226 1234 5678 9012
+                            这是什么 url http://www.baidu.com"""
+                        )
+})
+
+# 这是什么邮箱 [REDACTED_EMAIL]
+# 这是什么 mac 地址 **:**:**:**:**:1B
+# 这是什么 ip *.*.*.1
+# 这是什么银行卡号 6226 1234 5678 9012
+# 这是什么 url <url_hash:035db66d>
+rprint(result["messages"][0].content)
+```
+
+### TodoListMiddleware
+
+应对比较复杂任务时，可以为模型提供规划能力，减缓降智
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+      # 接受两个参数 
+      # system_prompt 系统系统词 内置
+      # tool_description 工具描述信息，内置
+      TodoListMiddleware()
+    ],
+)
+# 实际内部就是通过 write_todos 创建规划任务，创建一个列表一项项的完成
+# {
+#     'name': 'write_todos',
+#     'args': {
+#         'todos': [
+#             {'content': '确定上海一日游的主题和必去景点（如外滩、豫园、陆家嘴等）', 'status': 'in_progress'},
+#             {'content': '规划合理的游览路线和时间安排，避免走回头路', 'status': 'pending'},
+#             {'content': '安排用餐时间和地点，体验上海本帮菜或特色小吃', 'status': 'pending'},
+#             {'content': '考虑交通方式（地铁/打车/步行）及各景点间的通勤时间', 'status': 'pending'},
+#             {'content': '准备备选方案和注意事项（天气、人流、门票预约等）', 'status': 'pending'}
+#         ]
+#     },
+#     'id': 'write_todos_0',
+#     'type': 'tool_call'
+# }
+result = agent.invoke({"messages": HumanMessage("使用 write_todos 帮我规划一个上海一日游")})
+```
+
+### ModelCallLimitMiddleware
+
+*   `thread_limit` 线程内模型调用上限
+*   `run_limit` 本次运行模型调用上限
+*   `exit_behavior` `end | error` 优雅退出和抛出异常
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+      ModelCallLimitMiddleware(
+        thread_limit=1,
+        # run_limit=1, 
+        # exit_behavior="end",
+        exit_behavior="error"
+      )
+    ],
+    tools=[get_weather],
+    checkpointer=InMemorySaver()
+)
+config = {"configurable": {"thread_id": "1"}}
+
+# Model call limits exceeded: run limit (1/1)
+# Model call limits exceeded: thread limit (1/1)
+# langchain.agents.middleware.model_call_limit.ModelCallLimitExceededError
+result = agent.invoke({"messages": HumanMessage("今天上海天气怎么样")}, config=config)
+```
+
+### ToolCallLimitMiddleware
+
+*   `tool_name` 不指定就监控所有工具，否则就指定工具
+*   `thread_limit` 线程内工具调用上限
+*   `run_limit` 本次运行工具调用上限
+*   `exit_behavior` 比较模型中间多出 `continue` 表示继续运行 Agent，模型自主决策后续行为
+
+### ModelFallbackMiddleware
+
+后备模型，当主模型失败时，会使用该模型
+
+```py
+model = init_chat_model(
+    "openai:kimi-k100", 
+    base_url=os.environ.get("OPENAI_BASE_URL"),
+)
+agent = create_agent(
+    model,
+    middleware=[
+      ModelFallbackMiddleware("deepseek:deepseek-v4-flash")
+    ],
+)
+result = agent.invoke({"messages": [HumanMessage("你是什么模型？")]})
+```
+
+### LLMToolSelectorMiddleware
+
+工具选择
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+      LLMToolSelectorMiddleware(
+        model=model, # 选择工具的模型
+        max_tools=2, # 最多支持选择工具的数量
+        # always_include=["get_weather"] # 在这里面的工具不会被计数
+      )
+    ],
+    tools=[get_news, get_weather]
+)
+result = agent.invoke({"messages": [HumanMessage("上海天气如何？使用 get_news 看看新闻")]})
+```
+
+### ToolRetryMiddleware
+
+基于指数退避算法，设置工具调用失败时的重试策略并且结合 `jitter` 实现抖动，防止短期迎来并发
+
+```py
+class ToolRetryMiddleware(
+    *,
+    # 最大重试次数，不包含初次调用 2 + 1 = 3
+    max_retries: int = 2, 
+    # None 表示所有工具
+    tools: list[BaseTool | str] | None = None, 
+    # 捕获的异常
+    retry_on: RetryOn = (Exception, ), 
+    # 返回包含错误详细信息的“ToolMessage” error 则是抛异常
+    on_failure: OnFailure = "continue", 
+    # 每次重试等待时间 * 2
+    backoff_factor: float = 2,
+    # 初始重试等待时间
+    initial_delay: float = 1,
+    # 最大等待延迟上限
+    max_delay: float = 60,
+    # 增加抖动
+    jitter: bool = True
+)
+```
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+      ToolRetryMiddleware(
+          max_retries=5,
+          max_delay=10.0,
+          retry_on=(TimeoutError,)
+      )
+    ],
+    tools=[get_weather]
+)
+res = agent.invoke({"messages": [HumanMessage("上海天气怎么样")]})
+rprint(res["messages"])
+# 包含信息
+# ToolMessage(
+#     content="Tool 'get_weather' failed after 6 attempts with TimeoutError: . Please try again.",
+#     name='get_weather',
+#     id='12a5e2a3-b044-4dc1-909f-a5339ccb77a3',
+#     tool_call_id='call_00_D4JALj3Ptmtaj5ogGQy27292',
+#     status='error'
+# ),
+```
+
+### ModelRetryMiddleware
+
+参数与 `ToolRetryMiddleware` 一致
+
+```py
+agent = create_agent(
+    'deepseek:deepseek-cat',
+    middleware=[
+      ModelRetryMiddleware(
+          max_retries=5,
+          max_delay=10.0,
+          on_failure="continue"
+      )
+    ]
+)
+
+res = agent.invoke({"messages": [HumanMessage("上海天气怎么样")]})
+rprint(res["messages"])
+# AIMessage(
+#       content="Model call failed after 6 attempts with BadRequestError: Error code: 400 - {'error': {'message': 'The supported API model names are deepseek-v4-pro or 
+# deepseek-v4-flash, but you passed deepseek-cat.', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_request_error'}}",
+#       additional_kwargs={},
+#       response_metadata={},
+#       id='aafb281c-234b-4b63-96e5-9775ddc8fabb',
+#       tool_calls=[],
+#       invalid_tool_calls=[]
+# )
+```
+
+### LLMToolEmulator
+
+当工具不完善的时候，可以使用该中间件达到 mock 的效果
+
+```py
+agent = create_agent(
+    model,
+    middleware=[
+      # 会默认使用这个去模拟工具的执行
+      LLMToolEmulator(model=model, tools=['get_weather'])
+    ],
+    tools=[get_weather]
+)
+
+res = agent.invoke({"messages": [HumanMessage("上海天气怎么样")]})
+rprint(res["messages"])
+```
+
+### 中间件的执行顺序
+
+> 遵循先进后出的策略，`1 -> 2 -> 3 -> 3 -> 2 -> 1`
+
+## 自定义中间件
+
+![image-4.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/6577b6bd43304292a8044b3297f85953~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736621&x-orig-sign=hdAUOxMOPNnMfTuIfJyofJ1PMrU%3D)
+
+中间件提供了六个钩子函数，按照功能可划分为两组
+
+`Node-style hooks`
+
+*   `before_agent` 智能体调用前
+*   `after_agent` 智能体调用后
+*   `before_model` 模型调用前
+*   `after_model` 模型调用后
+
+`Wrap-style hooks`
+
+*   `wrap_model_call` 模型调用前后执行
+*   `wrap_tool_call` 工具调用前后执行
+
+每个中间件都会用到其中多个或一个钩子函数，针对中间件的书写也提供了函数式和类两种方案（函数式一般仅使用一个钩子时使用）；函数最终也会被内部包装成类去执行
+
+### Node Style -> function
+
+```py
+@before_agent
+def before_agent_middleware(state: AgentState, runtime: Runtime):
+    print("=== before_agent ===")
+    return None
+
+@after_agent
+def after_agent_middleware(state: AgentState, runtime: Runtime):
+    print("=== after_agent ===")
+    return None
+
+@before_model
+def before_model_middleware(state: AgentState, runtime: Runtime):
+    print("=== before_model ===")
+    return None
+
+@after_model
+def after_model_middleware(state: AgentState, runtime: Runtime):
+    print("=== after_model ===")
+    return None
+
+agent = create_agent(
+    model,
+    middleware=[before_agent_middleware, after_agent_middleware, before_model_middleware, after_model_middleware],
+)
+agent.invoke({"messages": [HumanMessage("hello")]})
+
+# === before_agent ===
+# === before_model ===
+# === after_model ===
+# === after_agent ===
+```
+
+接收 `AgentState | Runtime` 两个参数，返回值为 `dict[str, Any] | None`。
+
+*   `AgentState` 是 Agent 运行中的状态，随着 Agent 的运行发行变化，包括**消息列表**也在其中。
+*   `Runtime` 是 Agent 运行中的上下文环境，包括**上下文和长期记忆**。
+*   返回值如果是 `None` 表示不做任何操作，返回字典可以状态；返回特定字段可以控制 Agent 流程；
+
+```py
+def before_model(self, state, runtime):
+    if state.get("count", 0) > 10:
+      #  tools 调到工具节点
+      return {"jump_to": "__end__"} # 跳过模型，直接结束
+
+# 修改 state
+@after_agent
+def after_agent_middleware(state: AgentState, runtime: Runtime):
+    state["messages"][-1].content += "after_agent"
+    return None
+```
+
+`state | runtime` 的信息如下
+
+```py
+# 随着不同的钩子数据也会有变化，比如 before_agent 只有 human 消息, after_agent 就会多一条 AI 消息
+{'messages': [HumanMessage(content='hello', additional_kwargs={}, response_metadata={}, id='f577b4bc-722a-4cf7-9891-263d37120559')]}
+
+Runtime(
+    context=None,
+    store=None,
+    stream_writer=<function Pregel.stream.<locals>.stream_writer at 0x10f47c4a0>,
+    heartbeat=<function _no_op_heartbeat at 0x1084f5620>,
+    previous=None,
+    execution_info=ExecutionInfo(
+        checkpoint_id='1f184dd4-4b99-6b70-8001-aef8a60a67cd',
+        checkpoint_ns='before_model_middleware.before_model:550f9db1-2052-10ef-6835-8c4766468404',
+        task_id='550f9db1-2052-10ef-6835-8c4766468404',
+        thread_id=None,
+        run_id=None,
+        node_attempt=1,
+        node_first_attempt_time=1784622130.085105
+    ),
+    server_info=None,
+    control=<langgraph.runtime.RunControl object at 0x10f33ebc0>
+)
+```
+
+**`before_**`** 通常用于消息修剪、数据脱敏、数据输入验证等操作
+
+**`after_**`** 通常用于状态统计、输出验证、格式化响应
+
+#### can\_jump\_to 参数
+
+中间件装饰器的参数，决定钩子可以直接跳转到流程的哪些地方
+
+*   `tools` 跳转至工具节点
+*   `end` 跳转至 Agent 流程的末尾，或者第一个 `after_agent` 钩子
+*   `model` 跳转至模型节点，或者第一个 `before_model` 钩子
+
+```py
+
+@after_model(can_jump_to=["tools"])
+def after_model_middleware(state: AgentState, runtime: Runtime):
+    print("=== after_model ===")
+    return None
+```
+
+### Node Style -> class
+
+类实现要继承 `AgentMiddleware` 这个类
+
+```py
+from langchain.agents.middleware from AgentMiddleware, hook_config
+
+class CustomMiddleware(AgentMiddleware):
+    def __init__(self):
+        super().__init__()
+    
+    @hook_config(['end', 'tools', 'model'])
+    def before_agent(self, state, runtime):
+        return None
+    
+    def before_model(self, state, runtime):
+        return None
+    
+    def after_agent(self, state, runtime):
+        return None
+    
+    def after_model(self, state, runtime):
+        return None
+```
+
+### Wrap Style -> function
+
+```py
+@wrap_model_call
+def wrap_model_call_middleware(request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse],) -> ModelResponse:
+    rprint(request)
+#     ModelRequest(
+#     model=ChatDeepSeek(
+#         metadata={'lc_versions': {'langchain-core': '1.4.9', 'langchain': '1.3.12', 'langchain-openai': '1.3.4'}},
+#         output_version=None,
+#         profile={
+#             'name': 'DeepSeek Chat',
+#             'release_date': '2025-12-01',
+#             'last_updated': '2026-02-28',
+#             'open_weights': True,
+#             'max_input_tokens': 1000000,
+#             'max_output_tokens': 384000,
+#             'text_inputs': True,
+#             'image_inputs': False,
+#             'audio_inputs': False,
+#             'video_inputs': False,
+#             'text_outputs': True,
+#             'image_outputs': False,
+#             'audio_outputs': False,
+#             'video_outputs': False,
+#             'reasoning_output': False,
+#             'tool_calling': True,
+#             'attachment': True,
+#             'temperature': True
+#         },
+#         client=<openai.resources.chat.completions.completions.Completions object at 0x114384980>,
+#         async_client=<openai.resources.chat.completions.completions.AsyncCompletions object at 0x114385400>,
+#         root_client=<openai.OpenAI object at 0x111e50ad0>,
+#         root_async_client=<openai.AsyncOpenAI object at 0x114384ad0>,
+#         model_name='deepseek-chat',
+#         model_kwargs={},
+#         openai_api_key=SecretStr('**********'),
+#         openai_proxy=None,
+#         stream_chunk_timeout=120.0,
+#         extra_body={'thinking': {'type': 'disabled'}},
+#         api_key=SecretStr('**********'),
+#         api_base='https://api.deepseek.com/v1'
+#     ),
+#     messages=[HumanMessage(content='你好派大星', additional_kwargs={}, response_metadata={}, id='94c72eca-8068-4c30-9a77-731bb6f43af5')],
+#     system_message=None,
+#     tool_choice=None,
+#     tools=[],
+#     response_format=None,
+#     state={'messages': [HumanMessage(content='你好派大星', additional_kwargs={}, response_metadata={}, id='94c72eca-8068-4c30-9a77-731bb6f43af5')]},
+#     runtime=Runtime(
+#         context=None,
+#         store=None,
+#         stream_writer=<function Pregel.stream.<locals>.stream_writer at 0x11454c180>,
+#         heartbeat=<function _no_op_heartbeat at 0x110641620>,
+#         previous=None,
+#         execution_info=ExecutionInfo(
+#             checkpoint_id='1f184e4e-eab6-694a-8000-417655033d5c',
+#             checkpoint_ns='model:cecf60ab-f4c0-d4f6-decf-f5ee3248f1c4',
+#             task_id='cecf60ab-f4c0-d4f6-decf-f5ee3248f1c4',
+#             thread_id=None,
+#             run_id=None,
+#             node_attempt=1,
+#             node_first_attempt_time=1784625421.681778
+#         ),
+#         server_info=None,
+#         control=<langgraph.runtime.RunControl object at 0x1128d64a0>
+#     ),
+#     model_settings={}
+# )
+
+    # 调用模型的动作
+    response = handler(request)
+    return response
+```
+
+```py
+@wrap_tool_call
+def model_tool_call_middleware(request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
+    rprint(request)
+#   ToolCallRequest(
+#     tool_call={'name': 'get_weather', 'args': {'city': '上海'}, 'id': 'call_00_WgdCPVqeejoaDfDinENH6195', 'type': 'tool_call'},
+#     tool=StructuredTool(
+#         name='get_weather',
+#         description='获取天气状况',
+#         args_schema=<class 'langchain_core.utils.pydantic.get_weather'>,
+#         func=<function get_weather at 0x1076b9b20>
+#     ),
+#     state={
+#         'messages': [
+#             HumanMessage(content='上海天气怎么样', additional_kwargs={}, response_metadata={}, id='2662c1f2-f87c-451e-ad29-443ecbd2f3be'),
+#             AIMessage(
+#                 content='好的，我来查询一下上海的天气情况。',
+#                 additional_kwargs={'refusal': None},
+#                 response_metadata={
+#                     'token_usage': {
+#                         'completion_tokens': 53,
+#                         'prompt_tokens': 273,
+#                         'total_tokens': 326,
+#                         'completion_tokens_details': None,
+#                         'prompt_tokens_details': {'audio_tokens': None, 'cache_write_tokens': None, 'cached_tokens': 256},
+#                         'prompt_cache_hit_tokens': 256,
+#                         'prompt_cache_miss_tokens': 17
+#                     },
+#                     'model_provider': 'deepseek',
+#                     'model_name': 'deepseek-v4-flash',
+#                     'system_fingerprint': 'fp_8b330d02d0_prod0820_fp8_kvcache_20260402',
+#                     'id': 'd892560b-e329-4bcb-8f81-9a30db3776c3',
+#                     'finish_reason': 'tool_calls',
+#                     'logprobs': None
+#                 },
+#                 id='lc_run--019f83fe-5ee8-70b3-9edc-389b4917dd67-0',
+#                 tool_calls=[{'name': 'get_weather', 'args': {'city': '上海'}, 'id': 'call_00_WgdCPVqeejoaDfDinENH6195', 'type': 'tool_call'}],
+#                 invalid_tool_calls=[],
+#                 usage_metadata={'input_tokens': 273, 'output_tokens': 53, 'total_tokens': 326, 'input_token_details': {'cache_read': 256}, 'output_token_details': {}}
+#             )
+#         ]
+#     },
+#     runtime=ToolRuntime(
+#         state={
+#             'messages': [
+#                 HumanMessage(content='上海天气怎么样', additional_kwargs={}, response_metadata={}, id='2662c1f2-f87c-451e-ad29-443ecbd2f3be'),
+#                 AIMessage(
+#                     content='好的，我来查询一下上海的天气情况。',
+#                     additional_kwargs={'refusal': None},
+#                     response_metadata={
+#                         'token_usage': {
+#                             'completion_tokens': 53,
+#                             'prompt_tokens': 273,
+#                             'total_tokens': 326,
+#                             'completion_tokens_details': None,
+#                             'prompt_tokens_details': {'audio_tokens': None, 'cache_write_tokens': None, 'cached_tokens': 256},
+#                             'prompt_cache_hit_tokens': 256,
+#                             'prompt_cache_miss_tokens': 17
+#                         },
+#                         'model_provider': 'deepseek',
+#                         'model_name': 'deepseek-v4-flash',
+#                         'system_fingerprint': 'fp_8b330d02d0_prod0820_fp8_kvcache_20260402',
+#                         'id': 'd892560b-e329-4bcb-8f81-9a30db3776c3',
+#                         'finish_reason': 'tool_calls',
+#                         'logprobs': None
+#                     },
+#                     id='lc_run--019f83fe-5ee8-70b3-9edc-389b4917dd67-0',
+#                     tool_calls=[{'name': 'get_weather', 'args': {'city': '上海'}, 'id': 'call_00_WgdCPVqeejoaDfDinENH6195', 'type': 'tool_call'}],
+#                     invalid_tool_calls=[],
+#                     usage_metadata={'input_tokens': 273, 'output_tokens': 53, 'total_tokens': 326, 'input_token_details': {'cache_read': 256}, 'output_token_details': {}}
+#                 )
+#             ]
+#         },
+#         context=None,
+#         config={
+#             'tags': [],
+#             'metadata': {
+#                 'ls_integration': 'langchain_create_agent',
+#                 'langgraph_step': 2,
+#                 'langgraph_node': 'tools',
+#                 'langgraph_triggers': ('__pregel_push',),
+#                 'langgraph_path': ('__pregel_push', 0, False),
+#                 'langgraph_checkpoint_ns': 'tools:3de491c7-7a2b-4851-d2d4-910543884caf',
+#                 'checkpoint_ns': 'tools:3de491c7-7a2b-4851-d2d4-910543884caf'
+#             },
+#             'callbacks': <langchain_core.callbacks.manager.CallbackManager object at 0x110a0c6d0>,
+#             'recursion_limit': 9999,
+#             'configurable': {
+#                 '__pregel_runtime': Runtime(
+#                     context=None,
+#                     store=None,
+#                     stream_writer=<function Pregel.stream.<locals>.stream_writer at 0x1107ad6c0>,
+#                     heartbeat=<function _no_op_heartbeat at 0x105ce5620>,
+#                     previous=None,
+#                     execution_info=ExecutionInfo(
+#                         checkpoint_id='1f184e61-4810-6b56-8001-fb803c7cb82d',
+#                         checkpoint_ns='tools:3de491c7-7a2b-4851-d2d4-910543884caf',
+#                         task_id='3de491c7-7a2b-4851-d2d4-910543884caf',
+#                         thread_id=None,
+#                         run_id=None,
+#                         node_attempt=1,
+#                         node_first_attempt_time=1784625914.654541
+#                     ),
+#                     server_info=None,
+#                     control=<langgraph.runtime.RunControl object at 0x11066ce80>
+#                 ),
+#                 '__pregel_replay_state': None,
+#                 '__pregel_task_id': '3de491c7-7a2b-4851-d2d4-910543884caf',
+#                 '__pregel_send': <built-in method extend of collections.deque object at 0x11076c4f0>,
+#                 '__pregel_read': functools.partial(<function local_read at 0x105ce6520>, PregelScratchpad(step=2, stop=9999, call_counter=<langgraph.pregel._algo.LazyAtomicCounter
+# object at 0x1101f1f90>, interrupt_counter=<langgraph.pregel._algo.LazyAtomicCounter object at 0x1107f48e0>, get_null_resume=<function _scratchpad.<locals>.get_null_resume at 
+# 0x1107adbc0>, resume=[], subgraph_counter=<langgraph.pregel._algo.LazyAtomicCounter object at 0x1107f4280>), {'messages': <langgraph.channels.binop.BinaryOperatorAggregate object 
+# at 0x1107cb080>, 'jump_to': <langgraph.channels.ephemeral_value.EphemeralValue object at 0x1107cb180>, 'structured_response': <langgraph.channels.last_value.LastValue object at 
+# 0x1107caec0>, '__start__': <langgraph.channels.ephemeral_value.EphemeralValue object at 0x1107cab80>, '__pregel_tasks': <langgraph.channels.topic.Topic object at 0x1107cad40>, 
+# 'branch:to:model': <langgraph.channels.ephemeral_value.EphemeralValue object at 0x1107cac40>, 'branch:to:tools': <langgraph.channels.ephemeral_value.EphemeralValue object at 
+# 0x1107caac0>}, {}, PregelTaskWrites(path=('__pregel_push', 0, False), name='tools', writes=deque([]), triggers=('__pregel_push',))),
+#                 '__pregel_checkpointer': None,
+#                 'checkpoint_map': {'': '1f184e61-4810-6b56-8001-fb803c7cb82d'},
+#                 'checkpoint_id': None,
+#                 'checkpoint_ns': 'tools:3de491c7-7a2b-4851-d2d4-910543884caf',
+#                 '__pregel_scratchpad': PregelScratchpad(
+#                     step=2,
+#                     stop=9999,
+#                     call_counter=<langgraph.pregel._algo.LazyAtomicCounter object at 0x1101f1f90>,
+#                     interrupt_counter=<langgraph.pregel._algo.LazyAtomicCounter object at 0x1107f48e0>,
+#                     get_null_resume=<function _scratchpad.<locals>.get_null_resume at 0x1107adbc0>,
+#                     resume=[],
+#                     subgraph_counter=<langgraph.pregel._algo.LazyAtomicCounter object at 0x1107f4280>
+#                 ),
+#                 '__pregel_call': functools.partial(<function _call at 0x105d1fb00>, <weakref at 0x1107e76a0; to 'langgraph.types.PregelExecutableTask' at 0x1107ad9f0>, 
+# retry_policy=None, futures=<weakref at 0x1107a2200; to 'langgraph.pregel._runner.FuturesDict' at 0x1107e74d0>, schedule_task=<bound method SyncPregelLoop.accept_push of 
+# <langgraph.pregel._loop.SyncPregelLoop object at 0x1107cc690>>, submit=<weakref at 0x1107fc450; to 'langgraph.pregel._executor.BackgroundExecutor' at 0x1107cc7d0>)
+#             }
+#         },
+#         stream_writer=<function Pregel.stream.<locals>.stream_writer at 0x1107ad6c0>,
+#         tool_call_id='call_00_WgdCPVqeejoaDfDinENH6195',
+#         store=None,
+#         tools=[
+#             StructuredTool(
+#                 name='get_weather',
+#                 description='获取天气状况',
+#                 args_schema=<class 'langchain_core.utils.pydantic.get_weather'>,
+#                 func=<function get_weather at 0x1076b9b20>
+#             )
+#         ],
+#         execution_info=ExecutionInfo(
+#             checkpoint_id='1f184e61-4810-6b56-8001-fb803c7cb82d',
+#             checkpoint_ns='tools:3de491c7-7a2b-4851-d2d4-910543884caf',
+#             task_id='3de491c7-7a2b-4851-d2d4-910543884caf',
+#             thread_id=None,
+#             run_id=None,
+#             node_attempt=1,
+#             node_first_attempt_time=1784625914.654541
+#         ),
+#         server_info=None
+#     )
+# )
+    # 调用工具
+    request.tool_call["args"]["is_forcast"] = True
+    result = handler(request)
+    return result
+```
+
+### Wrap Style -> class
+
+```py
+class WrapMiddleware(AgentMiddleware):
+    def __init__(self):
+        super().__init__()
+
+    def wrap_model_call(self, request, handler):
+        return None
+    
+    def wrap_tool_call(self, request, handler):
+        return None
+```
+
+## 中间件执行顺序
+
+```py
+class CustomMiddleware(AgentMiddleware):
+    def __init__(self):
+        super().__init__()
+
+    def before_agent(self, state, runtime):
+        print("====== before_agent ======")
+        return None
+    
+    def before_model(self, state, runtime):
+        print("====== before_model ======")
+        return None
+    
+    def after_agent(self, state, runtime):
+        print("====== after_agent ======")
+        return None
+    
+    def after_model(self, state, runtime):
+        print("====== after_model ======")
+        return None
+    
+    def wrap_model_call(self, request, handler):
+        print("====== wrap_model_call ====== before")
+        result =  handler(request)
+        print("====== wrap_model_call ====== after")
+        return result
+    
+    def wrap_tool_call(self, request, handler):
+        print("====== wrap_tool_call ====== before")
+        result = handler(request)
+        print("====== wrap_tool_call ====== after")
+        return result
+
+
+agent = create_agent(
+    model,
+    middleware=[CustomMiddleware()],
+    tools=[get_weather]
+)
+
+# ====== before_agent ======
+# ====== before_model ======
+# ====== wrap_model_call ====== before
+# ====== wrap_model_call ====== after
+# ====== after_model ======
+# ====== wrap_tool_call ====== before
+# ====== wrap_tool_call ====== after
+# ====== before_model ======
+# ====== wrap_model_call ====== before
+# ====== wrap_model_call ====== after
+# ====== after_model ======
+# ====== after_agent ======
+```

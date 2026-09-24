@@ -1,0 +1,20 @@
+{
+  "title": "MySQL",
+  "description": "从建库建表到事务、索引与存储过程",
+  "icon": "Database",
+  "pages": [
+    "quick-start",
+    "database-and-table",
+    "constraints",
+    "data-types",
+    "dql-single-table",
+    "functions",
+    "dql-joins",
+    "user-and-privilege",
+    "transaction",
+    "locking",
+    "indexing",
+    "view",
+    "stored-procedure"
+  ]
+}

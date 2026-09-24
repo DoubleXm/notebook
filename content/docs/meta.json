@@ -1,0 +1,18 @@
+{
+  "title": "栈记",
+  "pages": [
+    "index",
+    "---前端---",
+    "vue",
+    "react",
+    "frontend-engineering",
+    "---服务端与数据---",
+    "backend",
+    "database",
+    "---运维与 AI---",
+    "devops",
+    "ai",
+    "---工具---",
+    "journal"
+  ]
+}

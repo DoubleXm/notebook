@@ -1,0 +1,10 @@
+{
+  "title": "数据库",
+  "description": "MySQL 基础、查询与数据建模",
+  "root": true,
+  "icon": "Database",
+  "pages": [
+    "index",
+    "mysql"
+  ]
+}

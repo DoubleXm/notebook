@@ -1,0 +1,13 @@
+{
+  "title": "前端工程与架构",
+  "description": "模块化、代码规范、包管理与微前端",
+  "root": true,
+  "icon": "Blocks",
+  "pages": [
+    "module-system",
+    "observer",
+    "single-spa",
+    "code-style",
+    "verdaccio"
+  ]
+}

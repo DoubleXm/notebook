@@ -1,0 +1,9 @@
+{
+  "title": "FastAPI",
+  "description": "项目结构与日志集成",
+  "icon": "Waypoints",
+  "pages": [
+    "project-template",
+    "logging"
+  ]
+}

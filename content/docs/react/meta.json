@@ -1,0 +1,14 @@
+{
+  "title": "React",
+  "description": "渲染模型、状态设计与应用架构",
+  "root": true,
+  "icon": "Atom",
+  "pages": [
+    "hooks",
+    "react-for-ts",
+    "controlled-vs-uncontrolled",
+    "lazy-loading-error-catching",
+    "custom-hooks",
+    "components"
+  ]
+}

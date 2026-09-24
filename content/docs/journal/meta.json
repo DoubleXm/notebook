@@ -1,0 +1,11 @@
+{
+  "title": "随笔与工具",
+  "description": "抓包、代理与终端环境配置",
+  "root": true,
+  "icon": "SquarePen",
+  "pages": [
+    "charles",
+    "iterm2",
+    "whistle-proxy"
+  ]
+}

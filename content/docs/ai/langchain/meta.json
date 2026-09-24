@@ -1,0 +1,14 @@
+{
+  "title": "LangChain v1.x",
+  "description": "模型、工具、Agent、中间件、记忆与 RAG",
+  "icon": "Blocks",
+  "pages": [
+    "model-and-prompt",
+    "tools-and-structured-output",
+    "agent",
+    "agent-middleware",
+    "agent-memory",
+    "rag",
+    "lcel"
+  ]
+}

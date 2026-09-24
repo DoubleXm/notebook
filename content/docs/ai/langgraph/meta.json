@@ -1,0 +1,9 @@
+{
+  "title": "LangGraph v1.x",
+  "description": "State、Node、Edge 与运行时控制",
+  "icon": "Workflow",
+  "pages": [
+    "core-concepts",
+    "fault-tolerance-and-streaming"
+  ]
+}

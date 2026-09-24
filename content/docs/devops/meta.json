@@ -1,0 +1,12 @@
+{
+  "title": "运维与云原生",
+  "description": "Linux、Docker、Git 与 CI/CD",
+  "root": true,
+  "icon": "Terminal",
+  "pages": [
+    "linux",
+    "docker",
+    "git",
+    "jenkins"
+  ]
+}

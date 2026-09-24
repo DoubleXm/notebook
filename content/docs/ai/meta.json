@@ -1,0 +1,12 @@
+{
+  "title": "AI 与 Agent",
+  "description": "Agent Runtime、工具、MCP、RAG 与工程实践",
+  "root": true,
+  "icon": "Bot",
+  "pages": [
+    "langchain",
+    "langgraph",
+    "mcp",
+    "pi-harness"
+  ]
+}

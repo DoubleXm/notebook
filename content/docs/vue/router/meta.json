@@ -1,0 +1,8 @@
+{
+  "title": "VueRouter",
+  "description": "路由模式、组件渲染与导航守卫的实现原理",
+  "icon": "Route",
+  "pages": [
+    "core-api-implementation"
+  ]
+}

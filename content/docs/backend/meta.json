@@ -1,0 +1,11 @@
+{
+  "title": "后端",
+  "description": "Python、Nest 与服务端工程",
+  "root": true,
+  "icon": "ServerCog",
+  "pages": [
+    "index",
+    "python",
+    "nest"
+  ]
+}

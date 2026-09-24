@@ -1,0 +1,1445 @@
+---
+title: PI 生产级 Agent Harness
+description: 从模型连接、Agent Loop、工具、MCP、Skill、RAG 到 NestJS 封装的完整实践
+---
+
+PI 侧主要使用两个包：
+
+- `@earendil-works/pi-ai` 负责模型、认证、协议 adapter 和消息类型。
+- `@earendil-works/pi-agent-core` 负责 Agent Loop、`Agent`、`AgentHarness`、Session、Tool、Skill 和运行生命周期。
+
+LangChain 的 `create_agent`、LangGraph、DeepAgents 和 Cherry Studio 用法不同，底层职责却很接近：
+
+| 阶段 | 共同职责 | PI 0.85.1 的主要入口 |
+| --- | --- | --- |
+| 连接模型 | Provider、协议、认证、模型目录 | `Models`、`Provider`、`Model` |
+| 组织上下文 | 消息、system prompt、工具 schema | `Message`、`systemPrompt`、`AgentHarnessTool` |
+| 驱动执行 | 模型与工具之间的循环 | `agentLoop()`，生产侧由 `AgentHarness` 承接 |
+| 扩展运行 | middleware、hook、event | `harness.hooks`、`harness.events` |
+| 保存状态 | session、checkpoint、恢复 | `SessionRepo`、`Session`、`AgentLane` |
+
+其实我想表达的是，Agent 开发可能已经到了标准化的流程。无论最终对用户是什么形式，核心都离不开不同厂家模型适配、智能体、工具、MCP 和 Skill，后面再是基于目标用户又一层包装。
+
+本文沿着一条生产中轴推进：`模型连接 -> Agent Loop -> Agent 与 AgentHarness -> 消息和 system prompt -> Tool、MCP、Skill、RAG -> 生命周期与 Session -> NestJS`。
+
+## 连接模型
+
+模型连接分成两类：PI 内置目录中的标准 Provider，以及企业、私有部署和兼容服务使用的自定义 Provider。
+
+### Model、Provider 和 Models 的分工
+
+| 对象 | 作用 | 是否可以直接手写 |
+| --- | --- | --- |
+| `Model` | 描述一个具体模型，例如百炼的 `qwen-plus` | 可以，但只有注册到 Provider 后才能被 `Models` 查找和调用 |
+| `Provider` | 绑定 Provider ID、认证方式和协议 adapter，并可携带 provider 级别的 `baseUrl` | 可以用 `createProvider()` 创建 |
+| `Models` | Provider 注册表和请求入口，负责查找模型、解析认证、转发请求 | 用 `createModels()` 创建 |
+
+`Provider.baseUrl` 不会自动覆盖或拼接到 `Model.baseUrl`。0.85.1 真正发请求时读取的是 `Model.baseUrl`，所以自定义服务必须为每个 Model 设置正确地址。
+
+`getModel(providerId, modelId)` 是获取模型的主要方法，前提是这个模型必须先注册到对应的 `Provider`。
+
+### 连接内置 Provider
+
+0.85.1 内置了 OpenAI、Anthropic、Google、DeepSeek、Groq、Mistral、xAI、OpenRouter 等常见 Provider。
+
+```ts
+// src/agent/builtin.models.ts
+import { createModels } from '@earendil-works/pi-ai';
+import { anthropicProvider, openaiProvider } from '@earendil-works/pi-ai/providers/all';
+
+const models = createModels();
+models.setProvider(openaiProvider());
+models.setProvider(anthropicProvider());
+const openaiModel = models.getModel('openai', 'gpt-4.1');
+const claudeModel = models.getModel('anthropic', 'claude-haiku-4-5');
+```
+
+`openaiProvider()` 和 `anthropicProvider()` 都已经内置各自的 `baseUrl`、认证环境和协议 adapter，所以创建时不需要传 URL。
+前者使用 OpenAI Responses adapter，后者使用 Anthropic Messages adapter。
+
+`getModel()` 取出的 `Model` 要连同本次请求的 `Context` 一起交给 `Models.streamSimple()`。
+
+### 自定义 Provider
+
+下面这段代码可以直接作为 `src/agent/bailian.models.ts`。
+
+百炼的 Compatible Mode 使用 OpenAI Chat Completions 协议，因此 `baseUrl` 写到 `/compatible-mode/v1`，`openAICompletionsApi()` 会在后面拼接 `/chat/completions`：
+
+```ts
+// src/agent/bailian.models.ts
+import {
+  createModels,
+  createProvider,
+  envApiKeyAuth,
+  type Model,
+  type Models
+} from '@earendil-works/pi-ai';
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
+
+const baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const qwenPlus: Model<'openai-completions'> = {
+  id: 'qwen-plus',
+  name: 'Qwen Plus',
+  api: 'openai-completions',
+  provider: 'bailian',
+  // API 根路径，openAICompletionsApi 会在这里后面拼接 /chat/completions。
+  baseUrl,
+  reasoning: false,
+  input: ['text'],
+  // 示例价格设为 0；生产环境换成百炼官方价格，usage.cost 才有正确结果。
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 131_072,
+  maxTokens: 8_192,
+  // 百炼兼容端点不支持 OpenAI 的 store、developer role 等字段时，明确关掉自动探测。
+  compat: {
+    supportsStore: false,
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: false,
+    supportsStrictMode: false,
+    maxTokensField: 'max_tokens'
+  }
+};
+
+export function createBailianModels(): Models {
+  const models = createModels();
+
+  models.setProvider(
+    createProvider({
+      id: 'bailian',
+      name: '阿里云百炼',
+      baseUrl,
+      // envApiKeyAuth 只声明 Key 的来源，不会在创建 Provider 时读取或保存 Key。
+      auth: { apiKey: envApiKeyAuth('百炼 API Key', ['DASHSCOPE_API_KEY']) },
+      models: [qwenPlus],
+      api: openAICompletionsApi()
+    })
+  );
+
+  return models;
+}
+
+const models = createBailianModels();
+const model = models.getModel('bailian', 'qwen-plus');
+
+if (!model) {
+  throw new Error('模型不存在或未配置');
+}
+
+const stream = models.streamSimple(model, {
+  messages: [{ role: 'user', content: '你好，介绍一下你自己。', timestamp: Date.now() }]
+});
+
+for await (const event of stream) {
+  if (event.type === 'text_delta') {
+    process.stdout.write(event.delta);
+  }
+}
+```
+
+`envApiKeyAuth(name, envVars)` 声明 API Key 从哪里取，不会在创建 Provider 时立即读取或保存 Key。
+- `name` 用于认证状态展示
+- `envVars` 每次请求前，`Models` 会先查已保存的 credential，再回退到 `DASHSCOPE_API_KEY`。
+
+`Model` 中需要重点关注的字段如下：
+
+| 字段 | 作用 |
+| --- | --- |
+| `api` | 决定使用哪套协议 adapter，本例是 `openai-completions` |
+| `provider` | 必须和 `Provider.id` 一致，否则 `Models` 找不到归属 |
+| `baseUrl` | 本次请求实际使用的 API 根路径 |
+| `contextWindow`、`maxTokens` | 参与上下文预算、压缩和输出限制 |
+| `compat` | 覆盖 OpenAI 兼容服务的字段差异，避免把百炼不支持的字段直接发过去 |
+
+`openAICompletionsApi()` 是一个双向适配器：发送前把 PI 请求转成 OpenAI Chat Completions 格式，接收后把响应流转回 PI 的 `AssistantMessageEvent`。
+它只负责 PI 访问上游模型，不会让 PI 自动对外返回 OpenAI 格式；如果服务端还要兼容 OpenAI，需要另外实现出口适配层。
+
+
+## 一次模型请求如何变成 Agent Loop
+
+先记住一句话：**Agent Loop 会反复执行“请求模型 -> 判断是否调用工具 -> 执行并回填结果 -> 再请求模型”，直到模型不再调用工具或运行时要求停止。**
+
+```text
+用户消息
+  -> 请求模型
+  -> 有 toolCall？
+       -> 执行工具
+       -> 写入 ToolResultMessage
+       -> 再请求模型
+  -> 没有 toolCall
+       -> 结束本轮 turn 并返回回答
+```
+
+Agent Loop 分成内外两层。
+- 内层负责把当前任务真正推进下去：请求模型，如果模型要求调用工具就执行工具；如果此时队列里有 steering 消息，就把它插到上下文里，再继续请求模型。内层会一直重复，直到既没有工具调用，也没有 steering 消息。
+
+- 外层不参与模型和工具的往返，它只在内层准备停下时检查 follow-up；如果发现 follow-up，就把它当作新的输入，再启动一轮内层循环，否则结束整个任务。
+
+- `steering`：Agent 正在工作时“改方向”。它不会中断当前正在执行的工具，等当前 turn 的工具全部结束后，才插入上下文，影响下一次模型请求。
+
+- `follow-up`：Agent 本来准备结束时“追加一件事”。只有内层已经没有工具调用和 steering，外层才会检查它，有消息就再跑一个 turn。
+
+内层负责模型、工具和 steering 的往复，外层负责在准备结束时接上下一个 follow-up。提前结束有四种常见原因：
+
+- `error`：模型请求或运行过程发生错误。
+- `aborted`：调用方主动取消当前运行。
+- 预算收口：应用通过 `shouldStopAfterTurn()` 判断轮次、耗时、费用或上下文空间已经超限。
+- 工具终止：只有当前整批工具结果都设置 `terminate: true`，才跳过自动请求模型的下一步。
+
+PI 没有为每个 Agent 创建 LangGraph 那样的状态图，所谓 loop 本质上一直围绕同一组 `AgentMessage[]` 推进。生产代码通常不直接调用 `agentLoop()`，而是交给 `AgentHarness`，由它补充持久化、工具、Hook、取消和恢复。
+
+## Agent 与 AgentHarness 的关系
+
+`Agent` 和 `AgentHarness` 都从 `@earendil-works/pi-agent-core` 根入口导出，但它们不是同一种东西。
+
+`Agent` 用 `new Agent()` 创建，持有当前 transcript、模型、工具和 active run，适合 CLI、脚本和应用自己管理的短生命周期任务。它不做数据库会话、跨进程恢复。
+
+```ts
+import { Agent } from '@earendil-works/pi-agent-core';
+import { createBailianModels } from './bailian.models';
+
+const models = createBailianModels();
+const model = models.getModel('bailian', 'qwen-plus');
+
+if (!model) {
+  throw new Error('模型不存在或未配置');
+}
+
+const agent = new Agent({
+  // Models.streamSimple 已经满足 Agent 需要的 StreamFn，认证由 Models 处理。
+  streamFn: (selectedModel, llmContext, options) => {
+    return models.streamSimple(selectedModel, llmContext, options);
+  },
+  initialState: {
+    model,
+    systemPrompt: '你是一个简洁的技术助手。',
+    messages: [],
+    tools: []
+  }
+});
+```
+
+`AgentHarness` 是带 `create()` 方法的工厂，创建后得到的是绑定某个 Session 的 `harness`。两者的关系是：`Agent` 管一次内存运行，`AgentHarness` 管可持久化、可恢复的会话运行。
+
+```text
+SessionRepo.create/open()
+  -> Session
+  -> AgentHarness.create({ session, models, model, tools, ... })
+  -> { harness, open }
+  -> harness.lane('main', context)
+  -> AgentLane
+  -> lane.prompt('用户消息', undefined, context)
+```
+
+生产主线使用 Harness，因为它额外提供了持久化身份、配置快照、Hook 与 Event，以及同一 Lane 的并发操作保护。最小骨架如下：
+
+```ts
+import {
+  AgentHarness,
+  BACKGROUND_CONTEXT,
+  JsonlSessionRepo,
+  withAbortSignal,
+  type Context
+} from '@earendil-works/pi-agent-core';
+import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
+import { createBailianModels } from './bailian.models';
+
+// 以下三项是应用级资源，可以跟随进程生命周期复用。
+const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+const models = createBailianModels();
+const sessions = new JsonlSessionRepo({
+  fileSystem: executionEnv,
+  sessionsRoot: '/data/pi-sessions'
+});
+
+export async function createHarness(requestSignal: AbortSignal) {
+  // Context 是本次请求的运行作用域，取消信号会继续传给 Provider、Hook 和 Tool。
+  const context: Context = withAbortSignal(requestSignal, BACKGROUND_CONTEXT);
+  const session = await sessions.create({ cwd: process.cwd() }, context);
+  const model = models.getModel('bailian', 'qwen-plus');
+
+  if (!model) {
+    throw new Error('模型不存在或未配置');
+  }
+
+  const { harness, open } = await AgentHarness.create(
+    {
+      session,
+      models,
+      model,
+      systemPrompt: '你是一个简洁的技术助手。',
+      tools: []
+    },
+    context
+  );
+  const lane = await harness.lane('main', context);
+
+  return { context, session, harness, lane, open };
+}
+```
+
+| 名词 | 通俗解释 | 作用域 |
+| --- | --- | --- |
+| `SessionRepo` | 会话仓库，负责创建、打开、列出和删除会话 | 应用级，通常单例 |
+| `Session` | 一段可以持久化的对话及其分支、operation 状态 | 会话级，不能跨用户共享 |
+| `Context` | 本次执行的身份、取消信号和 telemetry 父级等运行环境 | 请求或子任务级 |
+| `AgentHarness` | 把 Session、模型、工具和 Hook 组装成可恢复运行 | 会话级 |
+| `AgentLane` | Session 内一条串行执行线，默认叫 `main` | 会话内的运行线 |
+
+`Context` 不是业务用户对象，tenant、用户角色和订单信息应放进 `toolContext`。这也意味着 `AgentHarness` 不能跨 Session 复用，后面的 NestJS 封装会按请求创建它。
+
+## 消息与 system prompt 怎么组装
+
+PI 内部保存 `AgentMessage[]`，Provider 真正接收的是 `Message[]`。两者不能混用：前者包含 Session、UI、恢复和运行过程需要的信息，后者只能包含模型协议允许的内容。请求模型前，Harness 通过 `toProviderMessages` 完成转换，`convertToLlm` 是 PI 提供的默认实现。
+
+```text
+Session 中的 AgentMessage[]
+  -> toProviderMessages()
+  -> convertToLlm() 默认转换
+  -> Provider 能接收的 Message[]
+```
+
+默认转换后，Provider 侧只有三种消息：
+
+| 类型 | 关键字段 | 作用 |
+| --- | --- | --- |
+| `UserMessage` | `role: "user"`、`content`、`timestamp` | 用户文本或图片 |
+| `AssistantMessage` | `content`、`provider`、`model`、`usage`、`stopReason` | 模型文本、thinking 和 tool call |
+| `ToolResultMessage` | `toolCallId`、`toolName`、`content`、`isError` | 把工具结果关联回调用 |
+
+`toolCall` 不是独立消息，而是 `AssistantMessage.content` 里的一种内容块。工具执行后，Harness 会生成对应的 `ToolResultMessage`，下一轮模型依靠 `toolCallId` 对齐调用和结果。
+
+PI 没有 `SystemMessage`，system prompt 和消息数组分开传递。下面把系统提示词和消息转换放在同一个 Harness 配置里：
+
+```ts
+import {
+  AgentHarness,
+  convertToLlm,
+  type AgentMessage,
+  type Context
+} from '@earendil-works/pi-agent-core';
+import type { Message } from '@earendil-works/pi-ai';
+
+interface AppContext {
+  tenantName: string;
+  role: 'user' | 'admin';
+}
+
+const auth: AppContext = { tenantName: 'tenant-a', role: 'user' };
+const { harness } = await AgentHarness.create<AppContext>(
+  {
+    session,
+    models,
+    model,
+    tools: [],
+    toolContext: auth,
+    // 这里生成的是本次 turn 的系统提示词，不是一条会话消息。
+    systemPrompt: ({ tenantName, role }) => {
+      const permission = role === 'admin' ? '可以查询管理数据' : '只能查询本人数据';
+      return `你是企业内部知识助手。\n当前租户：${tenantName}\n权限：${permission}`;
+    },
+    // AgentMessage 是 PI 内部格式，这里统一转成 Provider 能接收的 Message[]。
+    toProviderMessages: (messages: AgentMessage[]): Message[] => convertToLlm(messages)
+  },
+  context
+);
+```
+
+转换的原因很直接：`AgentMessage` 可能包含压缩摘要、branch summary、`CustomMessage` 和运行字段，Provider 不认识这些结构。`convertToLlm()` 会保留 `user`、`assistant`、`toolResult`，并把内置摘要转成模型可读的 user 内容。项目自己的消息类型如果不需要给模型看，就在转换时过滤；如果需要，则要实现对应规则。直接做类型断言只能骗过 TypeScript，请求仍会被 Provider 拒绝。
+
+发送消息统一走 Lane。`lane.prompt()` 返回 `RunResult`，不是直接返回 `AssistantMessage`；`result.value` 是 operation 的记录，消息正文要从 Session 或事件流读取：
+
+```ts
+import type { AgentLane, Context } from '@earendil-works/pi-agent-core';
+
+export async function promptLane(lane: AgentLane, context: Context) {
+  const result = await lane.prompt('总结当前会话。', undefined, context);
+
+  if (!result.ok) {
+    // LaneBusy、InvalidMessage、Closed 等预期失败都在这里处理。
+    return { ok: false as const, error: result.error };
+  }
+
+  return { ok: true as const, operation: result.value };
+}
+```
+
+## 定义并绑定工具
+
+工具从 `@earendil-works/pi-agent-core` 根入口定义，参数 schema 使用 PI 的 TypeBox 接口。下面先定义应用自己的服务和业务上下文，再把它包装成 Harness Tool：
+
+```ts
+import type {
+  AgentHarnessTool,
+  AgentHarnessToolInvocation,
+  Context
+} from '@earendil-works/pi-agent-core';
+import { Type } from '@earendil-works/pi-ai';
+
+interface AppContext {
+  tenantId: string;
+  role: 'user' | 'admin';
+}
+
+interface Order {
+  id: string;
+  status: string;
+  amount: number;
+}
+
+interface OrderService {
+  getOrder(orderId: string, tenantId: string, signal?: AbortSignal): Promise<Order>;
+}
+
+const orderParams = Type.Object({
+  orderId: Type.String({ description: '订单号' })
+});
+
+export function createOrderTool(orderService: OrderService): AgentHarnessTool<AppContext, typeof orderParams> {
+  return {
+    name: 'get_order',
+    label: '查询订单',
+    description: '根据订单号查询订单状态、金额和物流信息。',
+    parameters: orderParams,
+    execute: async (
+      toolCallId: string,
+      { orderId },
+      onUpdate,
+      toolContext,
+      invocation: AgentHarnessToolInvocation,
+      context: Context
+    ) => {
+      // 工具可以先把中间进度推给 UI，不必等整个业务查询结束。
+      onUpdate({ content: [{ type: 'text', text: '正在查询订单...' }], details: {} });
+      const order = await orderService.getOrder(orderId, toolContext.tenantId, context.abortSignal);
+
+      return {
+        // content 会进入下一轮模型上下文，details 只给 UI、日志或审计使用。
+        content: [{ type: 'text', text: JSON.stringify(order) }],
+        details: { toolCallId, operationId: invocation.operationId, order }
+      };
+    }
+  };
+}
+```
+
+这里几个名字第一次出现时最容易混：
+
+```text
+tools             Harness 手里有哪些工具定义
+activeToolNames   当前 turn 允许模型看到哪些工具
+toolContext       当前 turn 随工具调用一起传入的业务上下文快照
+Context           取消、telemetry 和运行值域，主要给运行时使用
+invocation        operation、turn、memo 等恢复信息
+```
+
+`tools` 和 `toolContext` 都是 `AgentHarness.create()` 的配置，但职责不同。`tools` 里的每个工具都可以写死，`toolContext` 可以按请求生成。`execute()` 的六个参数也有明确用途：
+
+| 参数 | 类型 | 作用 |
+| --- | --- | --- |
+| `toolCallId` | `string` | 关联调用和结果 |
+| `params` | `Static<typeof parameters>` | 已经过 schema 校验的参数 |
+| `onUpdate` | `AgentHarnessToolUpdateCallback` | 上报流式进度和恢复检查点 |
+| `toolContext` | `TContext` | 当前 turn 的业务上下文快照 |
+| `invocation` | `AgentHarnessToolInvocation` | operation、turn、memo 和恢复信息 |
+| `context` | `Context` | 取消信号和运行期值域 |
+
+工具返回值里的 `content` 是模型的输入，`details` 是应用侧结构化数据。不要把密钥、数据库连接串或不适合给模型看的原始数据放进 `content`。
+
+批量绑定工具时，`activeToolNames` 决定模型当前能看到什么：
+
+```ts
+import { AgentHarness } from '@earendil-works/pi-agent-core';
+import type { Context, Session } from '@earendil-works/pi-agent-core';
+import type { Api, Model, Models } from '@earendil-works/pi-ai';
+
+interface HarnessInput {
+  session: Session;
+  models: Models;
+  model: Model<Api>;
+  context: Context;
+  orderService: OrderService;
+}
+
+export async function createOrderHarness(input: HarnessInput) {
+  const orderTool = createOrderTool(input.orderService);
+  const { harness } = await AgentHarness.create<AppContext>(
+    {
+      session: input.session,
+      models: input.models,
+      model: input.model,
+      tools: [orderTool],
+      activeToolNames: ['get_order'],
+      toolContext: { tenantId: 'tenant-a', role: 'user' }
+    },
+    input.context
+  );
+
+  return harness;
+}
+```
+
+运行中可以调用 `harness.setTools()` 替换工具定义，也可以调用 `lane.setActiveTools()` 调整当前 Lane 的可见工具。配置变化后，新的 turn 会拿到新的快照。
+
+隐藏工具不等于授权。模型看不到某个工具，并不意味着攻击者不能伪造 tool call，真正的权限判断应该放在 `before_tool`：
+
+```ts
+import type { AgentHarness } from '@earendil-works/pi-agent-core';
+
+interface RequestAuth {
+  userId: string;
+}
+
+interface PermissionService {
+  canCall(auth: RequestAuth, toolName: string, args: unknown): Promise<boolean>;
+}
+
+export function registerPermissionHook(
+  harness: AgentHarness<AppContext>,
+  permissions: PermissionService,
+  auth: RequestAuth
+) {
+  return harness.hooks.on('before_tool', async ({ toolName, args }) => {
+    if (!(await permissions.canCall(auth, toolName, args))) {
+      // block 会生成错误 ToolResult，但不会执行底层工具。
+      return { block: { reason: '当前用户没有执行该工具的权限' } };
+    }
+    return undefined;
+  });
+}
+```
+
+## 把 MCP 工具适配成 PI Tool
+
+PI Core 不负责连接 MCP Server，应用需要把 MCP 工具转换成 `AgentHarnessTool`：
+
+```text
+McpClient.listTools()
+  -> McpTool[]
+  -> createMcpTool() 转换 name、description、inputSchema、execute
+  -> AgentHarnessTool[]
+  -> AgentHarness.create({ tools, activeToolNames })
+```
+
+适配的重点是协议转换：`inputSchema` 变成 PI Tool 的 `parameters`，`toPiContent()` 只负责把 MCP content 转成
+PI 的内容块，`createMcpTool()` 再把返回值和 details 组装成 `AgentToolResult`。
+
+```ts
+import type {
+  AgentHarnessTool,
+  AgentToolResult
+} from '@earendil-works/pi-agent-core';
+import { Type, type TSchema } from '@earendil-works/pi-ai';
+import type { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import type { ContentBlock, Tool as McpTool } from '@modelcontextprotocol/sdk/types.js';
+
+interface AppContext {
+  tenantId: string;
+}
+
+// 把 MCP content 转成 PI ToolResult 可以消费的文本或图片块。
+function toPiContent(content: ContentBlock[]): AgentToolResult<unknown>['content'] {
+  return content.map((item) => {
+    const part = item as {
+      type?: string;
+      text?: string;
+      data?: string;
+      mimeType?: string;
+    };
+
+    if (part.type === 'text') {
+      return { type: 'text', text: part.text ?? '' };
+    }
+
+    if (part.type === 'image') {
+      return {
+        type: 'image',
+        data: part.data ?? '',
+        mimeType: part.mimeType ?? 'application/octet-stream'
+      };
+    }
+
+    // 音频、资源链接等暂时没有统一映射，先保留 JSON，方便模型和日志排查。
+    return { type: 'text', text: JSON.stringify(part) };
+  });
+}
+
+export function createMcpTool(
+  serverName: string,
+  tool: McpTool,
+  client: McpClient
+): AgentHarnessTool<AppContext> {
+  return {
+    // 加 Server 前缀，避免多个 MCP Server 出现同名工具。
+    name: `${serverName}_${tool.name}`,
+    label: tool.name,
+    description: tool.description ?? '',
+    parameters: Type.Unsafe(tool.inputSchema as unknown as TSchema),
+    execute: async (_toolCallId, args, _onUpdate, _toolContext, _invocation, context) => {
+      const result = await client.callTool(
+        { name: tool.name, arguments: args as Record<string, unknown> },
+        undefined,
+        { signal: context.abortSignal }
+      );
+
+      if (result.isError === true) {
+        throw new Error(`MCP tool ${tool.name} failed`);
+      }
+
+      return {
+        // content 会进入下一轮模型上下文，details 只供应用侧记录和展示。
+        content: toPiContent(result.content),
+        details: {
+          server: serverName,
+          tool: tool.name,
+          structuredContent: result.structuredContent
+        }
+      };
+    }
+  };
+}
+```
+
+`createMcpTool()` 的返回值可以直接和普通业务 Tool 合并到 `tools`，再通过 `activeToolNames` 控制当前 turn 模型能看到哪些工具，绑定方式和上一节一致。
+
+## 加载和使用 Skill
+
+一个 Skill 本质上是目录里的 Markdown，不是动态代码包：
+
+```text
+skills/
+└── refund-policy/
+    ├── SKILL.md
+    └── references/
+        └── refund-rules.md
+```
+
+`loadSkills()` 读取的是这份文件的 frontmatter 和正文，正文进入 `skill.content`；`filePath` 用于定位同目录下的引用文件。应用拿到 `Skill[]` 后，再决定怎样装配：
+
+```ts
+import {
+  formatSkillsForSystemPrompt,
+  loadSkills,
+  type Context,
+  type ExecutionEnv,
+  type Skill
+} from '@earendil-works/pi-agent-core';
+
+export async function loadSupportSkills(executionEnv: ExecutionEnv, context: Context) {
+  const { skills, diagnostics } = await loadSkills(executionEnv, ['./skills'], context);
+  const skillIndex = formatSkillsForSystemPrompt(skills);
+  const skill = skills.find((item) => item.name === 'refund-policy');
+
+  return {
+    skills,
+    diagnostics,
+    skillIndex,
+    skill
+  };
+}
+```
+
+这里的返回值分别用于：`skills` 传给 Harness 资源并供显式调用，`diagnostics` 进入启动日志或配置告警，`skillIndex` 进入 system prompt，`skill` 则包含正文和文件位置。系统提示词中只放名称、描述和位置这类轻量索引；完整正文由 `load_skill` Tool 按需返回。
+
+应用显式调用 Skill 时，直接走 Lane：
+
+```ts
+import type { AgentLane, Context } from '@earendil-works/pi-agent-core';
+
+export function invokeRefundSkill(lane: AgentLane, context: Context) {
+  return lane.skill('refund-policy', '只处理当前订单', context);
+}
+```
+
+如果希望模型自己选择 Skill，就提供 `load_skill` Tool：
+
+```ts
+import type { AgentHarnessTool, Skill } from '@earendil-works/pi-agent-core';
+import { Type } from '@earendil-works/pi-ai';
+
+export function createLoadSkillTool(skills: Skill[]): AgentHarnessTool<AppContext> {
+  return {
+    name: 'load_skill',
+    label: '读取 Skill',
+    description: '需要具体操作步骤或项目规范时读取对应 Skill。',
+    parameters: Type.Object({
+      name: Type.String({ description: '要读取的 Skill 名称' })
+    }),
+    execute: async (_toolCallId, { name }) => {
+      const skill = skills.find((item) => item.name === name);
+
+      if (!skill) {
+        throw new Error(`Skill not found: ${name}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: skill.content }],
+        details: { name: skill.name, filePath: skill.filePath }
+      };
+    }
+  };
+}
+```
+
+Harness 不会自动把 Skill 正文加入 system prompt，也不会自动提供读取工具。需要把索引和工具显式传进去：
+
+```ts
+import { AgentHarness, type Context, type Session, type Skill } from '@earendil-works/pi-agent-core';
+import type { Api, Model, Models } from '@earendil-works/pi-ai';
+
+interface SkillHarnessInput {
+  session: Session;
+  models: Models;
+  model: Model<Api>;
+  context: Context;
+  skills: Skill[];
+  skillIndex: string;
+}
+
+export async function createSkillHarness(input: SkillHarnessInput) {
+  const loadSkillTool = createLoadSkillTool(input.skills);
+  const { harness } = await AgentHarness.create<AppContext>(
+    {
+      session: input.session,
+      models: input.models,
+      model: input.model,
+      tools: [loadSkillTool],
+      resources: { skills: input.skills },
+      systemPrompt: ['你是一个技术支持 Agent。', input.skillIndex].join('\n\n')
+    },
+    input.context
+  );
+
+  return harness;
+}
+```
+
+这里的 `resources.skills` 表示 Harness 知道有哪些 Skill，`systemPrompt` 负责把索引告诉模型，`load_skill` Tool 负责把正文按需放进对话。
+
+## 接入 Milvus RAG
+
+PI 没有向量检索套件。Milvus 负责存储和相似度检索，应用还要补 Embedding、分片、租户过滤、文档版本和 rerank。先定义一个检索 Tool：
+
+```ts
+import type { AgentHarnessTool } from '@earendil-works/pi-agent-core';
+import { Type } from '@earendil-works/pi-ai';
+
+interface RagHit {
+  documentId: string;
+  version: string;
+  text: string;
+  score: number;
+}
+
+interface RagSearchInput {
+  query: string;
+  topK: number;
+  tenantId: string;
+}
+
+interface RagService {
+  search(input: RagSearchInput, signal?: AbortSignal): Promise<RagHit[]>;
+}
+
+const ragParams = Type.Object({
+  query: Type.String({ description: '需要检索的问题或关键词' }),
+  topK: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 }))
+});
+
+// 把检索结果压成带来源的文本，方便模型引用，也方便前端展示出处。
+function formatHits(hits: RagHit[]): string {
+  return hits.map((hit) => `[${hit.documentId}@${hit.version}] ${hit.text}`).join('\n\n');
+}
+
+export function createKnowledgeTool(rag: RagService): AgentHarnessTool<AppContext, typeof ragParams> {
+  return {
+    name: 'search_knowledge',
+    label: '检索知识库',
+    description: '问题依赖内部文档、产品规范或历史资料时检索相关片段。',
+    parameters: ragParams,
+    execute: async (_toolCallId, { query, topK }, _onUpdate, toolContext, _invocation, context) => {
+      // tenantId 来自 toolContext，不允许模型自己填写。
+      const hits = await rag.search(
+        { query, topK: topK ?? 5, tenantId: toolContext.tenantId },
+        context.abortSignal
+      );
+
+      return {
+        content: [{ type: 'text', text: formatHits(hits) }],
+        details: { query, hits }
+      };
+    }
+  };
+}
+```
+
+如果业务固定要求先检索再回答，可以直接把检索结果写进 prompt：
+
+```ts
+import type { Api, Model, Models } from '@earendil-works/pi-ai';
+
+interface RagAnswerInput {
+  models: Models;
+  model: Model<Api>;
+  rag: RagService;
+  tenantId: string;
+  question: string;
+}
+
+export async function answerWithRag(input: RagAnswerInput) {
+  const hits = await input.rag.search({
+    query: input.question,
+    topK: 5,
+    tenantId: input.tenantId
+  });
+
+  const systemPrompt = [
+    '只根据检索结果回答。',
+    '回答中的事实要保留来源标记。',
+    '检索结果没有覆盖时，明确说明不知道。'
+  ].join('\n');
+  // 拼接查询结果和用户问题
+  const messages = [{
+    role: 'user' as const,
+    content: `问题：${input.question}\n\n检索结果：\n${formatHits(hits)}`,
+    timestamp: Date.now()
+  }];
+  const stream = input.models.streamSimple(input.model, { systemPrompt, messages });
+  let answer = '';
+
+  for await (const event of stream) {
+    if (event.type === 'text_delta') {
+      answer += event.delta;
+    }
+  }
+
+  return { answer, hits };
+}
+```
+
+## 监听生命周期并处理取消与重试
+
+一次 Harness 运行大致经过：
+
+```text
+lane.prompt()
+  -> run_start
+  -> turn_start
+  -> Provider request
+  -> AssistantMessage / toolCall
+  -> tool_start / tool_update / tool_end
+  -> ToolResultMessage
+  -> 下一轮或 run_end
+```
+
+`harness.hooks` 在运行路径上修改数据，适合权限、上下文、请求头、压缩和工具前后处理。
+
+`harness.events` 做旁路观测，适合日志、指标、审计和 UI 推送。Hook 可以改变本次请求，Event 应该只记录已经发生的事实：
+
+```ts
+import type { AgentHarness, Context } from '@earendil-works/pi-agent-core';
+
+interface RequestLifecycle {
+  tenantId: string;
+  requestId: string;
+}
+
+interface MetricsService {
+  record(name: string, payload: unknown): Promise<void>;
+}
+
+export function registerLifecycle(
+  harness: AgentHarness<AppContext>,
+  request: RequestLifecycle,
+  metrics: MetricsService
+) {
+  const stopRequestHook = harness.hooks.on('before_request', async () => {
+    return {
+      streamOptions: {
+        headers: {
+          'x-tenant-id': request.tenantId,
+          'x-request-id': request.requestId
+        }
+      }
+    };
+  });
+
+  const stopRunListener = harness.events.on('run_end', async (event, _context: Context) => {
+    await metrics.record('agent_run', event);
+  });
+
+  return () => {
+    stopRequestHook();
+    stopRunListener();
+  };
+}
+```
+
+| Hook | 生产用途 |
+| --- | --- |
+| `before_run` | 校验消息，补充本次运行资源 |
+| `transform_context` | 按租户和知识域调整消息或 system prompt |
+| `before_request` | 添加请求头、超时和租户级限流 |
+| `before_tool` | 权限校验、参数清洗、幂等准入 |
+| `after_tool` | 结果脱敏、补充审计字段 |
+| `before_compaction` | 控制摘要策略，避免丢失关键业务信息 |
+
+取消和等待都在 Lane 上做：
+
+```ts
+import type { AgentLane, Context } from '@earendil-works/pi-agent-core';
+
+export async function cancelOperation(lane: AgentLane, operationId: string, context: Context) {
+  const result = await lane.requestAbort(operationId, context);
+
+  if (!result.ok) {
+    return { ok: false as const, error: result.error };
+  }
+
+  // 只发出取消信号。工具是否真正停止，取决于它有没有继续传递 abortSignal。
+  await lane.waitForIdle(context);
+  return { ok: true as const, aborted: result.value };
+}
+```
+
+重试也分两层。`streamOptions` 是 Harness 在每次模型请求时转交给 `Models.streamSimple()` 的请求选项，里面的 `maxRetries` 处理一次 Provider 请求内部的瞬时失败。`retry` 是 Harness 的 operation 级重试，会重新驱动一次未完成的 assistant 生成：
+
+```ts
+import {
+  AgentHarness,
+  type AgentHarnessStreamOptions,
+  type Context,
+  type Session
+} from '@earendil-works/pi-agent-core';
+import type { Api, Model, Models, RetryPolicy } from '@earendil-works/pi-ai';
+
+interface ResilientHarnessInput {
+  session: Session;
+  models: Models;
+  model: Model<Api>;
+  context: Context;
+}
+
+export async function createResilientHarness(input: ResilientHarnessInput) {
+  const streamOptions: AgentHarnessStreamOptions = {
+    timeoutMs: 120_000,
+    // 这是单次模型请求的最大重试次数。
+    maxRetries: 2,
+    maxRetryDelayMs: 30_000
+  };
+
+  const retry: RetryPolicy = {
+    enabled: true,
+    // 首次调用不算重试，所以这里表示失败后再尝试 1 次。
+    maxRetries: 1,
+    baseDelayMs: 1_000
+  };
+
+  const { harness, open } = await AgentHarness.create<AppContext>(
+    {
+      session: input.session,
+      models: input.models,
+      model: input.model,
+      streamOptions,
+      retry
+    },
+    input.context
+  );
+
+  return { harness, open };
+}
+
+export function updateRetryPolicy(harness: AgentHarness<AppContext>, context: Context) {
+  return harness.setRetryPolicy({ enabled: true, maxRetries: 2, baseDelayMs: 2_000 }, context);
+}
+```
+
+两层可以同时工作，所以最坏尝试次数要按相乘关系估算。生产环境最好只让一层负责长退避，另一层保持关闭，或者用统一预算限制整个请求的总耗时。
+
+模型请求可以重试，业务副作用不能靠再跑一次碰运气。有副作用的 Tool 至少要满足一种条件才适合自动恢复：
+
+- 下游支持业务幂等键。
+- 执行前写 intent，执行后能查询真实结果。
+- 恢复必须经过人工确认。
+
+## 恢复未完成的 Session operation
+
+`Agent` 的 `messages` 是内存状态；Harness 的 Session 才是可恢复事实：
+
+```text
+Session
+├── entries：message、compaction、branch_summary、custom
+├── lanes：从不同节点继续的对话分支
+├── tip：当前分支最后一次提交位置
+└── operations：run、compaction、navigation 的持久化状态
+```
+
+`AgentHarness.create()` 返回的 `open` 是上次进程留下的未结算 operation，每条 operation 记录 lane、operationId、kind 等状态。`RecoveryPolicy` 不是 PI 内置接口，而是应用自己定义的恢复准入策略，因为只有应用知道某个副作用有没有真正完成：
+
+```ts
+import type { AgentHarness, Context, OpenOperation } from '@earendil-works/pi-agent-core';
+
+interface RecoveryPolicy {
+  // true 表示业务确认可以安全继续；false 表示保留现场，等待补偿或人工处理。
+  canResume(operation: OpenOperation): Promise<boolean>;
+}
+
+interface ResumeInput {
+  harness: AgentHarness<AppContext>;
+  open: OpenOperation[];
+  context: Context;
+  recoveryPolicy: RecoveryPolicy;
+}
+
+export async function resumeOpenOperations(input: ResumeInput) {
+  const results = []; // 记录成功恢复的 operation 结果
+
+  // open 是 AgentHarness.create() 从 Session 中读出的遗留 operation，不是本次用户请求。
+  for (const operation of input.open) {
+    // PI 只知道 operation 尚未结束，不知道订单、支付等外部副作用是否已经发生。
+    // 所以先让应用根据幂等键、执行日志或下游状态判断能否继续。
+    if (await input.recoveryPolicy.canResume(operation)) {
+      // 确认安全后，从该 operation 的持久化状态继续驱动对应 Lane。
+      const lane = await input.harness.lane(operation.lane, input.context);
+      results.push(await lane.resume(input.context));
+    }
+  }
+
+  return results;
+}
+```
+
+例如进程可能在订单已经创建、结果还没写回 Session 时退出。此时如果直接 `lane.resume()`，工具可能再次创建订单；`canResume()` 应该先确认幂等键、执行日志或下游订单状态。返回 `false` 时不要恢复，可以把这条 operation 保留下来，交给补偿任务、对账流程或人工处理。
+
+0.85.1 自带两个 Repo：
+
+| Repo | 适用场景 | 边界 |
+| --- | --- | --- |
+| `MemorySessionRepo` | 测试、演示、短期单进程 | 进程退出即丢失 |
+| `JsonlSessionRepo` | CLI、本地工具、单实例 | 文件持久化，没有跨进程租约 |
+
+多副本部署必须保证同一个 Session 同时只有一个可写 owner。可以自己实现共享数据库版 `SessionRepo`，也可以保留本地 Repo，在入口层使用租约和 fencing token。Sticky session 只能提高命中率，不能替代锁。
+
+## 在 NestJS 中封装 Agent 模块
+
+前面的能力最终要进入真实后端。这里用一个订单客服场景落地：用户在已有会话里继续提问，后端从登录态确定 `tenantId`，再把回答流式返回给页面。这个场景同时涉及应用级连接、会话级运行状态和一次 HTTP 请求的生命周期，混在一个 Service 里很容易出现串会话、重复执行和连接泄漏。
+
+下面拆成两个边界：`src/agent` 只负责 PI 生命周期，可以复制到其他 NestJS 项目直接使用；`src/chat` 负责 Chat Completions 参数、OpenAI 返回格式和 HTTP/SSE。这样以后接内部聊天页、WebSocket 或任务平台时，不需要改 Agent 模块。
+
+```text
+src/agent/
+  bailian.models.ts     # 百炼 Provider 和模型目录
+  agent.types.ts        # Agent 输入、领域事件和依赖 token
+  agent.service.ts      # Session、Harness、Lane 和 PI 事件
+  agent.module.ts       # 只提供并导出 AgentService
+
+src/chat/
+  chat.service.ts       # 解析 Chat 请求并映射 OpenAI chunk
+  chat.controller.ts    # 只处理 HTTP 和 SSE 写入
+```
+
+### 封装可复用的 Agent 模块
+
+`Models` 和 `SessionRepo` 是应用级资源，适合放进 Agent 模块并跟随进程复用；`Context` 和 `AgentHarness` 必须在每次请求或会话中创建。
+
+`ChatService` 从请求中提取 `systemPrompt` 和最后一条 user 消息，后者作为 `userPrompt` 交给 AgentService。AgentService 恢复 Session 后只把这条新消息交给 `lane.prompt()`，历史不再重复导入。
+
+```ts
+// src/agent/agent.types.ts
+import type { Context, Session } from '@earendil-works/pi-agent-core';
+
+export const PI_MODELS = Symbol('PI_MODELS');
+export const SESSION_MANAGER = Symbol('SESSION_MANAGER');
+
+export interface AgentModelRef {
+  provider: string;
+  id: string;
+}
+
+export interface AgentRunInput {
+  model: AgentModelRef;
+  // 本轮新增的用户输入。之前的历史由同一个 Session 恢复，不从 OpenAI messages 反复导入。
+  userPrompt: string;
+  systemPrompt?: string;
+  tenantId: string;
+  sessionId: string;
+  context: Context;
+}
+
+// 这个事件是 Agent 模块对外的稳定边界，其他协议出口只消费它。
+export type AgentStreamEvent =
+  | { type: 'text.delta'; delta: string }
+  | { type: 'run.completed' };
+
+export interface SessionManager {
+  getOrCreate(tenantId: string, sessionId: string, context: Context): Promise<Session>;
+}
+```
+
+```ts
+// src/agent/agent.module.ts
+import { Module } from '@nestjs/common';
+import { JsonlSessionRepo } from '@earendil-works/pi-agent-core';
+import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
+import { createBailianModels } from './bailian.models';
+import { AgentService } from './agent.service';
+import { PI_MODELS, SESSION_MANAGER, type SessionManager } from './agent.types';
+
+@Module({
+  providers: [
+    { provide: PI_MODELS, useFactory: createBailianModels },
+    {
+      provide: SESSION_MANAGER,
+      useFactory: (): SessionManager => {
+        const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+        const repo = new JsonlSessionRepo({
+          fileSystem: executionEnv,
+          sessionsRoot: '/data/pi-sessions'
+        });
+
+        return {
+          async getOrCreate(tenantId, sessionId, context) {
+            // 这里只是单实例示例；生产环境要换成数据库 Repo，
+            // 并校验 tenantId、租约和幂等键。
+            const storageId = `${tenantId}:${sessionId}`;
+            const items = await repo.list({ cwd: process.cwd() }, context);
+            const metadata = items.find((item) => item.id === storageId);
+
+            // 同一个 sessionId 会打开已有 Session，上一轮的 user、assistant 和 ToolResult
+            // 都从这里恢复，这就是 Agent 的会话记忆。
+            return metadata
+              ? repo.open(metadata, context)
+              : repo.create({ cwd: process.cwd(), id: storageId }, context);
+          }
+        };
+      }
+    },
+    AgentService
+  ],
+  exports: [AgentService]
+})
+export class AgentModule {}
+```
+
+```ts
+// src/agent/agent.service.ts
+import { Inject, Injectable } from '@nestjs/common';
+import { AgentHarness } from '@earendil-works/pi-agent-core';
+import type { Models } from '@earendil-works/pi-ai';
+import { Observable } from 'rxjs';
+import {
+  PI_MODELS,
+  SESSION_MANAGER,
+  type AgentRunInput,
+  type AgentStreamEvent,
+  type SessionManager
+} from './agent.types';
+
+interface AppContext {
+  tenantId: string;
+  sessionId: string;
+}
+
+@Injectable()
+export class AgentService {
+  constructor(
+    @Inject(PI_MODELS) private readonly models: Models,
+    @Inject(SESSION_MANAGER) private readonly sessions: SessionManager
+  ) {}
+
+  stream(input: AgentRunInput): Observable<AgentStreamEvent> {
+    return new Observable<AgentStreamEvent>((subscriber) => {
+      let stopEvents = () => {};
+      let harness: AgentHarness<AppContext> | undefined;
+
+      void (async () => {
+        try {
+          const model = this.models.getModel(input.model.provider, input.model.id);
+
+          if (!model) {
+            throw new Error(`模型不存在：${input.model.provider}/${input.model.id}`);
+          }
+
+          const session = await this.sessions.getOrCreate(
+            input.tenantId,
+            input.sessionId,
+            input.context
+          );
+          // Session 负责恢复历史，本次 userPrompt 只追加一条新消息，
+          // 不重复导入旧历史。
+          const created = await AgentHarness.create<AppContext>(
+            {
+              session,
+              models: this.models,
+              model,
+              // Tool：业务工具加入这里。
+              // MCP：把 MCP Tool 转成 AgentHarnessTool 后合并进来。
+              // RAG：注册 search_knowledge Tool，租户过滤留在 RAG Service 内。
+              tools: [],
+              // System prompt 不放进 Message，而是按本次运行单独传给 Harness。
+              systemPrompt: input.systemPrompt,
+              // 业务身份随工具调用传递，运行时取消信号仍留在 Context 中。
+              toolContext: { tenantId: input.tenantId, sessionId: input.sessionId }
+            },
+            input.context
+          );
+          harness = created.harness;
+          const lane = await harness.lane('main', input.context);
+
+          // 生命周期扩展点：权限校验、上下文注入、压缩、审计和遥测都在这里注册 Hook。
+          // Skill：把 Skill 索引加入 systemPrompt，正文用 load_skill Tool 按需读取。
+          const stopMessageUpdate = harness.events.on('message_update', ({ event }) => {
+            if (event.type === 'text_delta') {
+              subscriber.next({ type: 'text.delta', delta: event.delta });
+            }
+          });
+
+          const stopRunStart = harness.events.on('run_start', (event) => {
+            // 主动停止的入口：把 { tenantId, sessionId, runId: event.runId, lane }
+            // 写入应用级活动运行表。停止接口拿到 runId 后调用 lane.requestAbort(runId, context)。
+            // 运行表可以是单例，但每一项只属于一次请求，不能跨租户或 Session 复用。
+          });
+          const stopRunEnd = harness.events.on('run_end', (event) => {
+            // completed、aborted、failed 都表示运行已经结束，在这里删除活动运行记录。
+            // 如果连接先断开，也要在 finally 中清理，避免长期持有 Lane 和请求资源。
+          });
+          stopEvents = () => {
+            stopMessageUpdate();
+            stopRunStart();
+            stopRunEnd();
+          };
+
+          const result = await lane.prompt(input.userPrompt, undefined, input.context);
+
+          if (!result.ok) {
+            throw result.error;
+          }
+
+          subscriber.next({ type: 'run.completed' });
+          subscriber.complete();
+        } catch (error) {
+          if (!subscriber.closed) {
+            subscriber.error(error);
+          }
+        } finally {
+          stopEvents();
+          await harness?.close(input.context);
+        }
+      })();
+
+      return () => stopEvents();
+    });
+  }
+}
+```
+
+### 在 ChatService 中适配 OpenAI 输出
+
+下面按 OpenAI Chat Completions 的请求和流式返回实现 NestJS 出口。当前版本只覆盖简单文本流，还不是完整的 OpenAI adapter，
+
+如果要长期维护 OpenAI 兼容能力，应把请求转换、事件映射、错误和结束帧抽到独立 adapter
+
+```ts
+// src/chat/chat.service.ts
+import { randomUUID } from 'node:crypto';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import type { Context } from '@earendil-works/pi-agent-core';
+import { Observable, type Subscription } from 'rxjs';
+import { AgentService } from '../agent/agent.service';
+
+interface ChatMessage {
+  // assistant 只为接收标准的 OpenAI 历史数组；当前实现不会把请求中的历史导入 PI Session。
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+// 以下类型对齐 OpenAI Chat Completions 请求和流式响应，PI 自身没有这些字段。
+export interface ChatCompletionRequest {
+  model: string;
+  messages: ChatMessage[];
+}
+
+interface ChatCompletionChunk {
+  id: string;
+  object: 'chat.completion.chunk';
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: { role?: 'assistant'; content?: string };
+    finish_reason: 'stop' | null;
+  }>;
+}
+
+@Injectable()
+export class ChatService {
+  constructor(private readonly agent: AgentService) {}
+
+  // ChatService 是对外兼容 OpenAI 协议的边界。
+  // 请求消息进入 Agent，Agent 事件再补齐为 OpenAI chunk。
+  stream(
+    request: ChatCompletionRequest,
+    tenantId: string,
+    sessionId: string,
+    context: Context
+  ): Observable<string> {
+    // 当前采用服务端 Session 记忆，而不是无状态重放消息数组：
+    // 1. system 单独提取并作为本次运行的系统提示词；
+    // 2. 最后一条 user 作为本轮新增 userPrompt；
+    // 3. 更早的 user 和 assistant 不读取，历史由同一个 PI Session 提供。
+    const userPrompt = [...request.messages].reverse().find((item) => item.role === 'user')?.content;
+
+    if (!userPrompt) {
+      throw new BadRequestException('messages 中没有 user 消息');
+    }
+
+    const [provider, ...modelParts] = request.model.split('/');
+    const modelId = modelParts.join('/');
+
+    if (!provider || !modelId) {
+      throw new BadRequestException('model 必须使用 provider/model 格式');
+    }
+
+    // PI 的 system prompt 与消息数组分开传递，因此从 OpenAI messages 中单独提取 system。
+    const systemPrompt = request.messages
+      .filter((item) => item.role === 'system')
+      .map((item) => item.content)
+      .join('\n\n');
+    // 如果以后要兼容纯无状态调用，需要为每个请求创建临时 Session，把完整 messages 转成
+    // PI AgentMessage[] 后再交给 lane.prompt()。assistant 消息必须补齐 provider、model、
+    // usage 和 stopReason 等运行字段，不能只把 { role, content } 直接转换。此模式也不能
+    // 继续复用持久 Session，否则请求中的历史会和已有 Session 历史重复。
+    const completionId = `chatcmpl-${randomUUID()}`;
+    const created = Math.floor(Date.now() / 1000);
+    // OpenAI chunk 必须补齐 id、object、created、model 和 choices，delta 只承载本次增量。
+    const toChunk = (
+      delta: ChatCompletionChunk['choices'][number]['delta'],
+      finishReason: 'stop' | null
+    ): ChatCompletionChunk => ({
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created,
+      model: request.model,
+      choices: [{ index: 0, delta, finish_reason: finishReason }]
+    });
+    // Chat Completions SSE 要求每个 data 帧以两个换行结束。
+    const toFrame = (payload: ChatCompletionChunk | { error: object } | '[DONE]') => {
+      const data = payload === '[DONE]' ? payload : JSON.stringify(payload);
+      return `data: ${data}\n\n`;
+    };
+
+    return new Observable<string>((subscriber) => {
+      let agentSubscription: Subscription | undefined;
+      let completed = false;
+      // OpenAI 流通常先返回 assistant role，再持续返回 content delta。
+      subscriber.next(toFrame(toChunk({ role: 'assistant' }, null)));
+
+      agentSubscription = this.agent
+        .stream({
+          model: { provider, id: modelId },
+          userPrompt,
+          systemPrompt: systemPrompt || undefined,
+          tenantId,
+          sessionId,
+          context
+        })
+        .subscribe({
+          next(event) {
+            if (event.type === 'text.delta') {
+              subscriber.next(toFrame(toChunk({ content: event.delta }, null)));
+            }
+          },
+          error(error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            // 错误继续使用 OpenAI error 对象，并在结束时补 [DONE]。
+            subscriber.next(toFrame({ error: { message, type: 'server_error', param: null, code: null } }));
+            subscriber.next(toFrame('[DONE]'));
+            subscriber.complete();
+          },
+          complete() {
+            completed = true;
+            // finish_reason 表示本轮结束，[DONE] 表示整个 SSE 流结束。
+            subscriber.next(toFrame(toChunk({}, 'stop')));
+            subscriber.next(toFrame('[DONE]'));
+            subscriber.complete();
+          }
+        });
+
+      return () => {
+        if (!completed) {
+          agentSubscription?.unsubscribe();
+        }
+      };
+    });
+  }
+}
+```
+
+```ts
+// src/chat/chat.controller.ts
+import { BadRequestException, Body, Controller, Headers, Post, Res } from '@nestjs/common';
+import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/pi-agent-core';
+import type { Response } from 'express';
+import { ChatService, type ChatCompletionRequest } from './chat.service';
+
+@Controller()
+export class ChatController {
+  constructor(private readonly chat: ChatService) {}
+
+  @Post('v1/chat/completions')
+  stream(
+    @Body() body: ChatCompletionRequest,
+    // 示例让网关传入租户；正式环境应由 AuthGuard 校验身份后再注入，
+    // 不能直接信任公网 header。
+    @Headers('x-tenant-id') tenantId: string,
+    @Headers('x-session-id') sessionId: string,
+    @Res() response: Response
+  ) {
+    if (!tenantId || !sessionId) {
+      throw new BadRequestException('缺少 x-tenant-id 或 x-session-id');
+    }
+
+    const abortController = new AbortController();
+    const context = withAbortSignal(abortController.signal, BACKGROUND_CONTEXT);
+
+    // 这些响应头让兼容 OpenAI 的客户端按 SSE 流持续读取 response.write 的内容。
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('Connection', 'keep-alive');
+    response.flushHeaders();
+
+    // ChatService 已经生成 data: JSON 或 data: [DONE] 帧，Controller 只负责写入连接。
+    const subscription = this.chat.stream(body, tenantId, sessionId, context).subscribe({
+      next: (frame) => response.write(frame),
+      error: () => response.end(),
+      complete: () => response.end()
+    });
+
+    response.on('close', () => {
+      // 客户端断开时，这里通过 abortSignal 取消当前运行。Provider 和 Tool 必须监听
+      // context.abortSignal；否则它们已经发出的下游请求或副作用仍可能继续执行。
+      abortController.abort();
+      subscription.unsubscribe();
+    });
+  }
+}
+```
+
+调用时，租户和会话通过 header 传入，模型使用百炼 Provider：
+
+```bash
+curl -N http://localhost:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-tenant-id: tenant-a' \
+  -H 'x-session-id: order-123' \
+  -d '{"model":"bailian/qwen-plus","messages":[{"role":"user","content":"你好"}]}'
+```
+
+## 用了 PI，放弃了什么，又要自己实现什么
+
+选择 PI 之后，最先感受到的不是某个能力缺失，而是很多默认决策回到了应用侧。模型、消息、Agent Loop、Tool、Session 和生命周期都有清晰入口，但怎样组合它们并没有一份跨业务通用的答案。PI 提供的是原子化操作，应用决定怎样把这些变成自己的产品。
+
+以 RAG 为例，PI 没有检索器、向量库封装或 reranker，检索链路要自己接。这看起来像是在补齐缺失的套件，实际上也暴露了业务边界：文档怎样切分、按哪个版本召回、租户权限在哪里过滤、结果是否需要重排，本来就不适合由 Agent runtime 统一替业务决定。
+
+会话和协议也是同样的取舍。Session 和 Lane 提供了恢复与分支运行的基础结构，但多副本下的持久化、写租约和租户隔离仍然要自己实现；`JsonlSessionRepo` 可以支撑本地工具或单实例服务，却不能直接等同于生产数据库。对外兼容 OpenAI 也依赖单独的 adapter，`openAIResponsesApi()` 只处理上游协议，应用还要负责下游请求、事件、错误和结束帧的转换。
+
+所以 PI 的边界很明确：它不替你搭建平台，而是尽量减少运行时对你的隐藏。它适合已经理解 Agent 运行方式、愿意用更多基础设施代码交换控制权和可替换性的团队。需要快速获得完整平台能力的项目，通常会从更重的框架或托管运行时开始；希望把模型、会话、工具、循环和协议边界掌握在自己手里的项目，PI 会更合适。

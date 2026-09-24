@@ -1,0 +1,504 @@
+---
+title: "模型连接、消息与提示词模板"
+description: 模型连接、消息结构与提示词模板的使用记录
+---
+
+本身包含 4 个核心模块，`LangChain | LangGraph | LangSmith | DeepAgents`
+
+*   `LangChain`: 基础能力层，大模型链接、工具调用、数据加载
+*   `LangGraph`: 任务流程编排，状态管理，多智能体协作
+*   `LangSmith`: 应用监控，性能评估，问题调试
+*   `DeepAgents`: 自主决策，专门做复杂任务拆解，基于 `LangGraph` 增加了规划功能、上下文管理的文件系统、子代理等
+
+可以按照前端渐进式框架的概念理解 `LangChain -> LangGraph -> DeepAgents`。
+
+`LangChain` 快速构建一个 Agent，通过 `LangGraph` 运行时编排增加决策、状态等，再通过 `DeepAgents` 处理复杂的任务，最后使用 `LangSmith` 调试和监控 Agent 的运行状况
+
+## 模型的连接
+
+两种方式 `init_chat_model` 或者指定模型的 SDK 比如 `ChatOpenAI` 这种，当然还有 `ChatDeepSeek`...
+
+前者的底层是基于后者实现，所以当使用 `init_chat_model` 时要保证对应的 SDK 也要存在。
+
+### 专有对话模型连接
+
+`uv add langchain-community` 安装社区支持的 `Chat...` [支持百炼、智普等等](https://reference.langchain.com/python/langchain-community)
+
+```py
+from langchain_community.chat_models import ChatZhipuAI
+
+# 如果不指定 env 就会自己从 env 环境中获取对应的 key 作为模型连接的 key 和 base_url
+# ZHIPUAI_API_KEY
+# ZHIPUAI_API_BASE
+zhipuai_chat = ChatZhipuAI(
+    model="glm-4",
+    # api_key="your-api-key",
+    # api_base="...",
+    # other params...
+)
+```
+
+`uv add langchain-deepseek | langchain-openai` [支持主流模型](https://docs.langchain.com/oss/python/integrations/providers/overview)
+
+```py
+from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
+
+# 和上面一样会找默认的 key 和 base_url
+# DEEPSEEK_API_BASE
+# DEEPSEEK_API_KEY
+
+# OPENAI_API_BASE
+# OPENAI_API_KEY
+```
+
+### 通用连接方案 init\_chat\_model
+
+![01.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/080380827b114b01a5bebe9133375c13~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736467&x-orig-sign=dkrv%2BZHZ%2FknltdWoxsMcc080CX4%3D)
+
+`init_chat_model` 则是对话连接的封装，相当于做了整合，根据模型内部自动选择对话模型去完成连接；如果某些模型提供了 openai 的适配版本也可以使用 openai 来驱动不同的模型。
+
+```py
+import os
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+
+load_dotenv()
+API_KEY = os.environ.get("OPENAI_API_KEY") 
+BASE_URL = os.environ.get("OPENAI_API_BASE")
+
+# 通过 openai 协议调用 kimi 的模型
+init_chat_model(
+    model="kimi-k2.6",
+    model_provider="openai", # 因为你使用了 openai 协议调用模型，所以要依赖 langchain-openai
+    api_key=API_KEY, # 因为使用了标准的 OPENAI_API_KEY 实际上可以直接不传也可以，会自动读取
+    base_url=BASE_URL # base_url 必须传，因为 kimi 提供的兼容方案 base_url 与 openai 并不相同
+)
+# https://api.moonshot.cn/v1  -> kimi
+# https://api.openai.com/v1   -> openai
+
+# 当不使用 model_provider 也想指定提供商的时候，可以直接通过 model 简写
+init_chat_model(
+  model="openai:kimi-k2.6",
+  base_url=BASE_URL
+)
+```
+
+不用转发直接使用的模型，则可以通过设置专用的环境变量达到和对话专用模型一样的效果
+
+```py
+from langchain.chat_models import init_chat_model
+
+# 会直接从环境变量中查找 DEEPSEEK_API_KEY DEEPSEEK_BASE_URL
+# 依赖 langchain-deepseek 需要提前下载
+# 内部会根据模型名称查找模型的归属然后进行分发或者 init_chat_model("deepseek:deepseek-chat")
+init_chat_model("deepseek-chat")
+```
+
+同样的如果想通过 openai 转发也要提供对应的 `api_key | base_url` 除非变量名和和值都符合 openai 协议，但是 `base_url` 肯定不会满足
+
+```py
+import os
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+
+load_dotenv()
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY") 
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL") 
+
+init_chat_model(
+  model="openai:deepseek-chat",
+  api_key=DEEPSEEK_API_KEY,
+  base_url=DEEPSEEK_BASE_URL
+)
+```
+
+常用参数如下：
+
+*   `model: str` 模型名称，可以和 model\_provider 合并使用
+*   `model_provider: str` 模型提供商
+*   `api_key: str` 模型秘钥
+*   `base_url: str` 模型地址
+*   `max_tokens: int` 模型输出的最大 token 数
+*   `timeout: float` 模型超时时间（秒）
+*   `max_retries: int = 6` 最大重试次数
+*   `temperature: float = 0.7` 温度 0-2 之间小数
+
+**temperature 用来控制模型输出的随机性，越高输出越随机**
+
+*   0.0 \~ 0.3 需要一致性、准确性的任务（数学计算、数据提取、分类、代码生成）
+*   0.5 \~ 0.7 平衡创造性和一致性（聊天、问答）
+*   0.8 \~ 1.5 创造性任务（写作、头脑风暴）
+*   1.5 \~ 2.0 高度创造性（诗歌、故事创作）
+
+## 模型的调用
+
+提供了三种方案 `invoke | stream | batch` 阻塞式、流式、批量，通过模型连接对象的返回值进行调用 `init_chat_model | ChatOpenAI...`。
+
+### invoke 阻塞式
+
+接收消息和一个配置对象，消息支持多种数据格式；
+
+```py
+# config 默认就是 None
+res = model.invoke("你好，海绵宝宝，我是派大星。", config=None)
+```
+
+也可以是复杂的列表类型，把完整对话记录传递进去，让模型看起来拥有记忆
+
+```py
+# 消息的种类分为四种
+# system 系统消息 SystemMessage
+# user 用户消息 HumanMessage
+# assistant AI 消息 AIMessage
+# tool 工具调用 （后续会碰到） ToolMessage
+messages = [
+  { "role": "system", "content": "现在是比奇堡角色扮演场景" },
+  { "role": "user", "content": "你好，海绵宝宝，我是派大星。" },
+  { "role": "assistant", "content": "早啊，派大星" },
+  { "role": "user", "content": "我们一起去抓水母吧" }
+]
+
+# 如果对象比较麻烦，同样提供了内置的构造类
+from langchain.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+
+messages = [
+  SystemMessage('现在是比奇堡角色扮演场景'),
+  HumanMessage('你好，海绵宝宝，我是派大星。'),
+  AIMessage('早啊，派大星'),
+  HumanMessage('我们一起去抓水母吧')
+]
+
+res = model.invoke(messages)
+```
+
+### stream 流式
+
+返回一个迭代器可以通过循环进行输出，可以实时展示模型的推理过程；
+
+```py
+res = model.stream(messages)
+
+for chunk in res:
+  # chunk.content 也可以
+  print(chunk.text, end="", flush=True)
+```
+
+### 模型的输出
+
+```py
+# 直接打印信息太过冗余，可以直接从 content 获取模型的回复内容
+print(res.content)
+# 使用 pretty_print() 打印可视化的输出
+print(res.pretty_print())
+```
+
+通过 `content_blocks` 可以获取到模型的推理信息，返回的是一个列表对象，**`content | pretty_print() | content_blocks`同样是适用 stream 模式**
+
+```py
+res = model.stream(messages)
+
+for chunk in res:
+    for message in chunk.content_blocks:
+        if len(message):
+            if message["type"] == "reasoning":
+                print(f"{message["reasoning"]}", end="", flush=True)
+            if message["type"] == "text":
+                print(f"{message["text"]}", end="", flush=True)
+# invoke 打印内容如下
+# [
+#     {
+#         'type': 'reasoning',
+#         'reasoning': '（派大星说要去抓水母！这可是我们最喜欢的活动了。他说"我们一起去"，说明他想和我一起玩。.....'
+#     },
+#     {'type': 'text', 'text': '好啊好啊！我马上去拿我的捕水母网！（兴奋地蹦跳着）今天一定能抓到超级多的水母！'}
+# ]
+```
+
+阻塞式输出的返回值是一个对象，显示比较复杂可以使用 `uv add rich` 进行格式化的输出，更好辨认
+
+```py
+AIMessage(
+    # 返回的内容
+    content='哇呜！太棒了！（兴奋地跳起来）我今天早上刚刚擦亮了我的捕虫网，就等你来叫我啦！',
+    # 模型拒绝回答的情况 None 标识正常回答
+    additional_kwargs={'refusal': None},
+    response_metadata={
+        # token 使用情况
+        'token_usage': {
+            'completion_tokens': 28, # 回答消耗的 token
+            'prompt_tokens': 37, # 输入消耗的 token
+            'total_tokens': 65, # 本次交互使用 token
+            'completion_tokens_details': {
+                'accepted_prediction_tokens': None, # 预测性生成 token
+                'audio_tokens': None, # 音频消耗 token
+                'reasoning_tokens': 123, # 推理消耗 token (深度思考)
+                'rejected_prediction_tokens': None # 被拒绝预测 token
+            },
+            # 输入中的音频 token, 缓存命中的 token
+            'prompt_tokens_details': {'audio_tokens': None, 'cache_write_tokens': None, 'cached_tokens': 0},
+            'prompt_cache_hit_tokens': 0,
+            'prompt_cache_miss_tokens': 37
+        },
+        # 模型提供商
+        'model_provider': 'openai',
+        # 模型名称
+        'model_name': 'deepseek-v4-flash',
+        # 系统指纹：追踪模型后端配置变更
+        'system_fingerprint': 'fp_8b330d02d0_prod0820_fp8_kvcache_20260402',
+        # api 响应 id
+        'id': 'ca8e630d-822c-40de-b2d3-0e6a56b84b15',
+        # 停止原因：stop（自然结束）、length（长度受限）
+        'finish_reason': 'stop',
+        # 对数概率（通常用于分析词汇选择的可能性）
+        'logprobs': None
+    },
+    # LangChain 内部标识
+    id='lc_run--019f4b2b-3c0d-7732-a2df-2710ccd08a29-0',
+    # 工具调用信息
+    tool_calls=[],
+    # 工具调用失败的信息
+    invalid_tool_calls=[],
+    # langchain 标准化后的 token 用量
+    usage_metadata={'input_tokens': 37, 'output_tokens': 28, 'total_tokens': 65, 'input_token_details': {'cache_read': 0}, 'output_token_details': {}}
+)
+```
+
+### batch
+
+处理一组消息，会按照顺序返回数据，也可以通过 `batch_as_completed` 按照完成顺序返回；
+
+适用场景：文档摘要、批量问答、数据预处理、多样本分类等。
+
+```py
+messages = [
+    "你好，你是谁？",
+    "2 + 3 * 5 = ?",
+    "中国首都在哪里？"
+]
+res = model.batch(messages)
+res = model.batch_as_completed(messages)
+
+for r in res:
+    print(r)
+```
+
+## 消息
+
+消息是与模型交互的基本单位，通过 `role` 区分角色
+
+```json
+{"role": "system", "content": "你是个精通编程的软件架构师"}
+{"role": "user", "content": "你好啊~"}
+// 模型消息有两种，带工具调用和不带
+{"role": "assistant", "content": "我也很高兴认识你"}
+{
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [{
+        "name": "get_weather",
+        "args": {"location": "北京"},
+        "id": "call_00_nUD2NC9QRN5Cg1GaoIkBJQ4s"
+    }]
+}
+// 工具类型消息
+{"role": "tool", "content": "今天天气很好", "tool_call_id":"call_00_nUD2NC9QRN5Cg1GaoIkBJQ4s"}
+```
+
+或者通过消息对象构造对应的消息
+
+```py
+from langchain.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+
+# content 是第一个参数可以不传递
+SystemMessage(content="你是个善解人意的助手")
+HumanMessage(content="你好啊~")
+AIMessage("我也很高兴认识你")
+ToolMessage(
+    content="<工具输出>",
+    tool_call_id="call_00_nUD2NC9QRN5Cg1GaoIkBJQ4s" # 一定要和AI消息中的调用ID匹配
+)
+```
+
+### `AIMessage` 特有属性
+
+```py
+res = model.invoke(messages)
+
+if isinstance(res, AIMessage):
+    print(res.response_metadata) # 模型元数据
+    print(res.usage_metadata) # 用量数据
+    print(res.tool_calls) # 工具调用
+```
+
+### `HumanMessage` 的多模态
+
+[多模态](https://docs.langchain.com/oss/python/langchain/messages#multimodal) 就是图片、文件、音视频的解析；以图片为例，支持两种场景
+
+```py
+# base64
+def encode_image():
+    """纯粹返回 Base64 编码字符串，不带 Data URI 前缀"""
+    with open(f"{os.getcwd()}/assets/01.png", "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode("utf-8")
+
+res = model.invoke([
+    HumanMessage([
+        {"type": "text", "text": "描述一下图片的内容"},
+        {"type": "image", "base64": encode_image(), "mime_type": "image/png"}
+    ])
+    # 二选一
+    # {
+    #     "role": "user",
+    #     "content": [
+    #         {"type": "text", "text": "描述一下图片的内容"},
+    #         {"type": "image", "base64": encode_image(), "mime_type": "image/png"}
+    #     ]
+    # }
+])
+
+# url
+res = model.invoke([
+    HumanMessage([
+        {"type": "text", "text": "描述一下图片的内容"},
+        {"type": "url", "url": "https://xxx.png"}
+    ]),
+    # 二选一
+    # {
+    #     "role": "user",
+    #     "content": [
+    #         {"type": "text", "text": "描述一下图片内容"},
+    #         {"type": "image", "url": "https://xxx.png"}
+    #     ]
+    # }
+])
+```
+
+## 提示词模板
+
+常规书写提示词的方案一般是模板字符串
+
+```py
+value = '老师'
+skill = '教书育人'
+
+prompt = f"""
+    你现在是一名 {value}
+    你拥有 {skill} 的能力
+"""
+```
+
+`langchain` 可以通过提示词模板，先定义好提示词，在使用时再具名传入对应的内容即可；
+
+```py
+from langchain_core.prompts import ChatPromptTemplate
+
+# 指定提示词模板，将动态内容通过 {} 预留
+# 支持元组和消息对象的使用
+template = ChatPromptTemplate([
+    ("system", "你是一名 {value}, 拥有 {skill} 的能力"),
+    ("user", "如何学习 {content}")
+])
+# 也支持使用类方法 from_messages 调用, 二者参数一致
+template = ChatPromptTemplate.from_messages([
+    ("system", "你是一名 {value}, 拥有 {skill} 的能力"),
+    ("user", "如何学习 {content}")
+])
+
+# 调用 invoke 方法
+res = template.invoke({ "value": "老师", "skill": "教书育人", "content": "古诗词" })
+
+# print(res) 输出的为一个 message 对象可以直接被模型使用
+# messages=[
+#   SystemMessage(content='你是一名 老师, 拥有 教书育人 的能力', additional_kwargs={}, response_metadata={}), 
+#   HumanMessage(content='如何学习 {content}',additional_kwargs={}, response_metadata={})
+# ]
+```
+
+除了元组还支持字典和 `Message` 对象方案，**但是 `Message` 对象中的占位符会失效**
+
+```py
+template = ChatPromptTemplate.from_messages([
+    {"role": "system", "content": "你是一名 {value}, 拥有 {skill} 的能力"},
+    {"role": "user", "content": "如何学习 {content}"}
+
+    # 传递 value | skill | content 参数也不会生效
+    # SystemMessage("你是一名 {value}, 拥有 {skill} 的能力"),
+    # HumanMessage("如何学习 {content}")
+])
+```
+
+### 获取消息的方法 invoke, format, format\_messages
+
+```py
+# 调用 invoke 方法
+res = template.invoke({ "value": "老师", "skill": "教书育人", "content": "古诗词" })
+print(type(res), res) # 返回 langchain_core.prompt_values.ChatPromptValue 类型的对象
+
+# format 方法
+res1 = template.format(value="老师", skill="教书育人", content="古诗词")
+print(type(res1), res1) # 返回字符串内容
+
+# format_messages 方法
+res2 = template.format_messages(value="老师", skill="教书育人", content="古诗词")
+print(type(res2), res2) # 返回列表
+# [
+#   SystemMessage(content='你是一名 老师, 拥有 教书育人 的能力', additional_kwargs={}, response_metadata={}), 
+#   HumanMessage(content='如何学习 古诗词', additional_kwargs={}, response_metadata={})
+# ]
+```
+
+### 常用提示词模板
+
+```py
+# 针对 ai, human, system 的提示词模板
+from langchain_core.prompts import HumanMessagePromptTemplate, AIMessagePromptTemplate, SystemMessagePromptTemplate
+
+# 支持数组，文字，还提供一个 from_template_file 处理文件
+res = HumanMessagePromptTemplate.from_template(["你好", "我好", "大家好"])
+res = AIMessagePromptTemplate.from_template("你好")
+res = SystemMessagePromptTemplate.from_template("你好")
+
+# 通过 format_messages 和 format 获取消息内容
+res.format()
+res.format_messages() # 对应类型的消息对象
+```
+
+### 消息预填充 partial
+
+像函数的默认参数一样。
+
+```py
+# 指定部分或者全部的默认值
+support_template = template.partial(content="背诗词")
+# 当调用时，如果不传递就会使用默认值
+res = support_template.format_messages(value="老师", skill="教书育人", content="学数学")
+```
+
+### 消息占位符 MessagesPlaceholder
+
+有 `JSON` 和 `Message` 两种形式，一般用于插入历史消息补充上下文
+
+```py
+from langchain_core.prompts import MessagesPlaceholder
+
+template = ChatPromptTemplate.from_messages([
+    ("system", "现在的比奇堡模仿大赛"),
+    # 二者都可
+    # ("placeholder", "{history}"),
+    MessagesPlaceholder('history'),
+    ("user", "{value}")
+])
+
+res = template.format_messages(
+    # 将老的上下文填充进来，不可以在进行 {} 占位
+    history=[
+      ("user", "派大星我们一起去抓水母吧"),
+      ("assistant", "好哇，一起去抓水母"),
+      ("user", "把水母送给蟹老板，让他变成伪蟹，哈哈哈"),
+      AIMessage("抓多点水母，把比奇堡的人都变成伪人吧~")
+    ], 
+    value="那我们需要抓多少水母呢？比奇堡都有谁在哇~"
+)
+```

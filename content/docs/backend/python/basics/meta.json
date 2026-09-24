@@ -1,0 +1,14 @@
+{
+  "title": "Python 基础教程",
+  "description": "从数据类型到面向对象的基础语法",
+  "icon": "Braces",
+  "pages": [
+    "numbers-strings-lists",
+    "control-flow-and-functions",
+    "tuple-list-set-dict",
+    "modules-and-packages",
+    "strings-files-exceptions",
+    "oop",
+    "functional-programming"
+  ]
+}

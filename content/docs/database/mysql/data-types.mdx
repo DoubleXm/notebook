@@ -1,0 +1,113 @@
+---
+title: '数据类型'
+description: 'MySQL 数值、字符串、日期与 JSON 等数据类型'
+---
+
+## int
+
+| 类型 | 大小 | 范围（有符号） | 范围（无符号） | 描述 |
+| ------------- | :-----------: | :-----------: | :-----------: | ------------- | 
+| `tinyint` | `1 Bytes` | (-128, 127) | (0, 255) | 很小的整数 |
+| `smallint`| `2 Bytes` | (-32768, 32767) | (0, 65535) | 较小的整数 |
+| `mediumint` | `3 Bytes` | (-8388608, 8388607) | (0, 16777215) | 一般的整数 |
+| `int` | `4 Bytes` | (-2147483648, 2147483647) | (0, 4294967295) | 标准的整数 |
+| `bigint` | `5 Bytes` | 很大 | 很大 | 很大，自己去搜吧 |
+
+默认创建出来的 `int` 类型是有符号的，如果需要的话，要指定对应的约束条件；
+
+```sql
+create table t1 (id int unsigned not null);
+
+alter table t1 add (age int not null); -- 设置 not null 后会填充 0
+```
+
+## 浮点数 float double decimal
+
+| 类型 | 大小 | 精度  | 取值范围 | 固定小数位 |
+| ------------- | :-----------: | :-----------: | :-----------: | ------------- | 
+| `float` | `4 Bytes` | 单精度浮点数，有效数字约 7 位  | ±3.4E+38 | `float(m, d)` |
+| `double`| `8 Bytes` | 双精度浮点数，有效数字约 15-16 位 | ±1.8E+308 | `double(m, d)` |
+| `decimal` | 变长，每 9 位数字占用 4 字节 | 字符串形式存储不会丢失精度 | 受 M 限制，但足够大 | `decimal(m, d)` |
+
+- 传递精度时 m 表示总位数，d 表示小数位数
+- `float` 在 8.0+ 有废弃警告，未来可能退出历史舞台；
+- `float | double` 算不明白 `0.1 + 0.2` 的问题；和大多数编程语言一样；
+- `decimal` 性能比较差劲，不会丢失精度；
+
+```sql
+-- float(5, 2) 总共五位，两位小数
+create table t1 (num1 float(5, 2));
+create table t1 (num1 float); -- 不指定时约为 7 位 123.456789
+```
+
+## 字符
+
+`char(n)` 定长字符串。
+- 最多能存 n 个字符，超出会报错，不足的话会在字符的后面补空格；
+- 缺点：浪费空间，不过取和存都是固定字符，速度比较快；
+- 范围： 0-255 字符
+
+`varchar(n)` 变长字符串。
+- 最多能存 n 个字符，超出会报错，不会补空格，直接存；
+- 优点：节省空间，取数据时不确定长度速度没有 `char` 快；
+- 范围：0-65535 字节，一行的最大字节数（与其他字段共享）
+
+```sql
+create table t1 (x char(10), y varchar(10));
+-- 给 x 和 y 插入的值后面统一价三个空格
+insert into t1 values ('x   ', 'y   ');
+-- 通过 char_length 函数获取字符的长度
+select char_length(x), char_length(y) from t1;
+```
+
+## 时间日期
+
+`year、date、time、datetime`
+
+```sql
+create table t2(
+  id int,
+  year year,
+  date date,
+  time time,
+  datetime datetime
+);
+
+-- 通过 now 函数获取当前时间，插入时会被直接处理
+insert into t2 values (1, now(), now(), now(), now());
+-- 也可以直接通过时间插入
+insert into t2 values (2, '2026', '2026-04-23', '15:51:50', '2026-04-23 15:51:50');
+
++------+------+------------+----------+---------------------+
+| id   | year | date       | time     | datetime            |
++------+------+------------+----------+---------------------+
+|    1 | 2026 | 2026-04-23 | 15:51:50 | 2026-04-23 15:51:50 |
+|    2 | 2026 | 2026-04-23 | 15:51:50 | 2026-04-23 15:51:50 |
++------+------+------------+----------+---------------------+
+```
+
+## 枚举
+
+```sql
+create table t3 (
+  id int,
+  name varchar(16),
+  gender enum('male', 'female', 'other')
+);
+
+-- 插入数据时 gender 只能是三个其中的一个
+```
+
+## 集合
+
+```sql
+create table t4 (
+  id int,
+  name varchar(16),
+  hobby set('tea', 'cola', 'beer')
+);
+
+insert into t4 values (1, 'tom', 'tea');
+-- 集合可以被插入上述值中的多个
+insert into t4 values (2, 'jack', 'tea,cola');
+```

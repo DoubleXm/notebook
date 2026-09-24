@@ -1,0 +1,9 @@
+{
+  "title": "Pinia",
+  "description": "Pinia 的使用方式与核心 API 实现原理",
+  "icon": "Store",
+  "pages": [
+    "basics",
+    "core-api-implementation"
+  ]
+}

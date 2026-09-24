@@ -1,0 +1,13 @@
+{
+  "title": "Linux",
+  "description": "目录结构、常用命令与 Shell 脚本",
+  "icon": "Terminal",
+  "pages": [
+    "directory-structure",
+    "common-commands-1",
+    "common-commands-2",
+    "service-and-package",
+    "shell-basics",
+    "shell-in-practice"
+  ]
+}

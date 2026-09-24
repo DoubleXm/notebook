@@ -1,0 +1,834 @@
+---
+title: "节点容错、流式输出与记忆管理"
+description: 节点容错、流式输出与持久化记忆管理
+---
+
+## 节点容错、缓存策略
+
+当图中某个节点运行失败时会导致整个图的运行失败，容错策略就是从重试、超时、异常处理、缓存等角度提升节点运行的稳定性和性能
+
+### 重试策略 RetryPolicy
+
+在网络异常、连接错误等偶发场景下使用，保证节点不会立马抛出错误；通过 `add_node()` 中 `retry_policy` 参数定义；
+
+使用 `RetryPolicy` 对象，接收参数如下：
+
+*   `initial_interval` 重试发生之前经过的时间，默认 0.5s
+*   `backoff_factor` 每次重试后用于增加间隔的乘数（指数退避）即 第一次重试的间隔 `initial_interval * backoff_factor` 结果再次 \* `backoff_factor` 默认值 2.0
+*   `max_interval` 重试间隔的最大值，默认 128.0s
+*   `max_attempts` 重试次数，默认 3
+*   `jitter` 是否在重试间增加随机抖动数，避免重试并发，默认 True
+*   `retry_on` 可以是异常类、异常类列表、回调函数、bool，False 表示所有异常都不重试
+
+一般场景默认值就行，具体情况具体对待
+
+```py
+from httpx import HTTPError
+from langgraph.graph import START, StateGraph
+from langgraph.graph.message import MessagesState  # 仅当做占位使用
+from langgraph.types import RetryPolicy
+from loguru import logger
+
+def node_1(state: MessagesState):
+    logger.info("节点开始运行")
+    raise HTTPError("网络错误...")
+    # raise TimeoutError("超时错误...")
+
+builder = StateGraph(MessagesState)
+builder.add_node(
+    "node_1",
+    node_1,
+    retry_policy=RetryPolicy(
+        # max_attempts=3,
+        # initial_interval=1,
+        # HttpError 重试，TimtoutError 不重试
+        retry_on=lambda e: bool(isinstance(e, HTTPError))
+    ),
+)
+
+builder.add_edge(START, "node_1")
+graph = builder.compile()
+graph.invoke({})
+```
+
+### 超时策略 TimeoutPolicy
+
+**指节点开始执行后运行的时长**，而非某一段业务代码运行的时长；超时会抛出 `NodeTimeoutError` 该异常默认支持重试。 接收三个参数如下
+
+*   `run_timeout` 总时长，如果节点运行超过了这个时间节点就会抛错误
+*   `idle_timeout` 节点空闲时长，节点在该时间内被系统判定没有输出就会被判定超时
+*   `refresh_on` 默认值 auto
+    *   `auto` 该场景下会被节点内部的修改状态、返回内容、调度任务、触发内部回调、手动心跳等重置 `idle_timeout` 计时
+    *   `heartbeat` 指定该参数后就只能通过手动心跳重置 `idle_timeout` 计时
+
+**超时仅使用异步节点，内部使用的是异步取消机制，如果是同步任务，将会在该任务结束后才会取消**
+
+```py
+import asyncio
+from langgraph.graph import START, StateGraph
+from langgraph.graph.message import MessagesState  # 仅当做占位使用
+from langgraph.runtime import Runtime
+from langgraph.types import RetryPolicy, TimeoutPolicy
+from loguru import logger
+
+# runtime 参数和 config 参数有点冲突
+# 起码在类型注解中看到的是这样的
+async def node_1(state: MessagesState, runtime: Runtime):
+    await asyncio.sleep(5)  # 直接运行就会抛出错误
+    logger.info("节点开始重试...")
+
+    # for i in range(1, 10):
+    #     await asyncio.sleep(1)
+    #     logger.info("手动心跳 {} 保证 idle_timeout 不超时", i)
+    #     runtime.heartbeat()
+    return state
+
+async def main():
+    builder = StateGraph(MessagesState)
+    builder.add_node(
+        "node_1",
+        node_1,
+        timeout=TimeoutPolicy(
+            run_timeout=20,
+            idle_timeout=5,
+            refresh_on="auto",
+        ),
+        retry_policy=RetryPolicy(),
+    )
+
+    builder.add_edge(START,"node_1")
+    graph = builder.compile()
+    await graph.ainvoke({})  # ainvoke 异步方法
+
+asyncio.run(main())  # 异步调用
+```
+
+### 异常处理
+
+超时进入重试，重试还不行就进入异常；异常处理需要一个方法，可以通过 `Command` 不让节点崩溃或者还原因为节点错误造成的副作用
+
+```py
+from httpx import HTTPError
+from langchain.messages import AIMessage
+from langgraph.errors import NodeError
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import MessagesState  # 仅当做占位使用
+from langgraph.types import Command
+from loguru import logger
+
+def node_1(state: MessagesState):
+    logger.info("节点开始运行")
+    raise HTTPError("网络错误...")
+
+def node_error(state: MessagesState, error: NodeError):
+    logger.info("error {}, node {}", error.error, error.node)
+    return Command(goto=END, update={"messages": [AIMessage("节点异常，直接结束")]})
+
+builder = StateGraph(MessagesState)
+builder.add_node("node_1", node_1, error_handler=node_error)
+
+builder.add_edge(START, "node_1")
+graph = builder.compile()
+# {
+#   'messages': [
+#     AIMessage(content='节点异常，直接结束', ..., id='2291e10d-0f13-45f1-8257-b61b5e3d87bc', tool_calls=[], ...])
+#   ]
+# }
+print(graph.invoke({}))
+```
+
+### 缓存策略 CachePolicy
+
+同样输入得到同样结果的节点可以被缓存命中，在缓存期间直接获取数据；内部会对传入的数据进行 hash 处理，缓存期间对比。如果像 Message 对象这种每次都会生成随机 id 就会缓存不起作用。
+
+缓存存放的位置可以是内存或 `Redis`， 缓存 `CachePolicy` 支持两个参数
+
+*   `key_func` 默认值是系统自动生成的缓存 key
+*   `ttl` 缓存时间，单位 s
+
+```py
+import time
+from operator import add
+from typing import Annotated, TypedDict
+from langgraph.cache.memory import InMemoryCache
+from langgraph.cache.redis import RedisCache
+from langgraph.graph import StateGraph
+from langgraph.types import CachePolicy
+from loguru import logger
+
+class CountState(TypedDict):
+    count: Annotated[int, add]
+
+def node_1(state: CountState):
+    time.sleep(5)
+    return {"count": 1}
+
+builder = StateGraph(state_schema=CountState)
+builder.add_node(
+    "node_1",
+    node_1,
+    cache_policy=CachePolicy(ttl=10),  # 定义缓存节点的过期时间
+)
+
+builder.set_entry_point("node_1")
+builder.set_finish_point("node_1")
+graph = builder.compile(cache=InMemoryCache())  # 定义缓存存储位置
+
+# 可以看出第一次等待 5s 第二个输入和输出一致，直接走缓存，第三次重新计算
+# 2026-08-28 17:25:14.633 | INFO     | __main__:<module>:194 - 首次调用：{'count': 2}
+# 2026-08-28 17:25:14.635 | INFO     | __main__:<module>:195 - 再次调用：{'count': 2}
+# 2026-08-28 17:25:19.642 | INFO     | __main__:<module>:196 - 再次调用：{'count': 3}
+logger.info("首次调用：{}", graph.invoke({"count": 1}))
+logger.info("再次调用：{}", graph.invoke({"count": 1}))
+logger.info("再次调用：{}", graph.invoke({"count": 2}))
+```
+
+### 多节点策略运行顺序
+
+不论是那种方案都在 `Node` 中一个个添加不免麻烦，官方提供 `builder.set_node_defaults()` 统一设置；
+
+当既存在默认又存在自定义时，节点的策略大于默认。**`StateGraph` 下的方法支持链式调用**
+
+```py
+from langgraph.cache.memory import InMemoryCache
+from langgraph.graph import MessagesState, StateGraph
+from langgraph.types import CachePolicy, RetryPolicy, TimeoutPolicy
+
+graph = (
+    StateGraph(MessagesState)
+    .set_node_defaults(
+        retry_policy=RetryPolicy(max_attempts=5),
+        timeout=TimeoutPolicy(run_timeout=10, idle_timeout=5),
+        cache_policy=CachePolicy(ttl=5),
+    )
+    .add_node("node_1", node_1, cache_policy=CachePolicy(ttl=10))
+    .add_node("node_2", node_2)
+    .set_entry_point("node_1")
+    .add_edge("node_1", "node_2")
+    .set_finish_point("node_2")
+    .compile(cache=InMemoryCache())
+)
+
+graph.invoke({})
+```
+
+## 记忆管理
+
+分为长期记忆和短期记忆，实际上之前的 `create_agent` 就是基于 `LangGraph` 实现的，所以记忆也是共用的，只用基于图的调用方式变了一些；[Agent 上下文记忆](https://juejin.cn/post/7665530652352921606)
+
+重复说明：
+
+*   短期记忆用于单会话线程，更改 `thread_id` 或者新开线程就会失效；从 UI 上来看，就是对话侧边的对话列表，每一项对应一个短期记忆；使用对象为 `checkpointer`
+*   长期记忆是应用级别的记忆，跨会话、跨线程都可以进行访问；从 UI 有点类似 `Agent` 的固有记忆；使用对象为 `store`
+
+### 短期记忆
+
+可以通过 `graph.get_state_history()` 传入 `config` 获取历史检查点，返回一个 `StateSnapshot` 对象的列表，包含属性如下。**这是一个从最新消息开始的倒序列表**
+
+*   `values` 当前检查点状态下，用户传入的值
+*   `next` 下一步要执行的节点 `__start__` 即 `START` 节点，空则表示已经本轮已经执行完毕
+*   `config` 就是当前检查点配置信息，还有 `checkpoint_ns` 检查点命名空间以及 `checkpoint_id` 检查点的唯一 id
+*   `parent_config` 上一个检查点的配置信息
+*   `tasks` 表示当前要运行的任务，任务执行失败也会在其中体现
+*   `metadata` 元数据，包含运行的 `step`
+
+```py
+from langchain.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import MessagesState, StateGraph
+from rich import print as rprint
+
+count = 1
+
+def model_node(state: MessagesState):
+    return {"messages": [AIMessage(f"第 {count + 1} 次回复用户")]}
+
+graph = (
+    StateGraph(state_schema=MessagesState)
+    .add_node("model_node", model_node)
+    .set_entry_point("model_node")
+    .compile(checkpointer=InMemorySaver())  # 传入 checkpointer
+)
+
+# 定义 config 并传入 invoke 保证单个 thread_id 存在记忆共享
+config: RunnableConfig = {"configurable": {"thread_id": "id_2"}}
+result = graph.invoke({}, config=config)
+result = graph.invoke({}, config=config)
+
+# StateSnapshot(
+#     values={
+#         'messages': [
+#             AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='90e4a71d-a8d0-4b19-a88c-d5af4fafba75', tool_calls=[], invalid_tool_calls=[]),
+#             AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='16d86465-0f7d-4e75-bdba-40e2be6c5051', tool_calls=[], invalid_tool_calls=[])
+#         ]
+#     },
+#     next=(),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da2-6fd0-8004-0ce7341dd7da'}},
+#     metadata={'source': 'loop', 'step': 4, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.686148+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da2-651c-8003-79ec6ddef3d3'}},
+#     tasks=(),
+#     interrupts=()
+# )
+# StateSnapshot(
+#     values={'messages': [AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='90e4a71d-a8d0-4b19-a88c-d5af4fafba75', tool_calls=[], invalid_tool_calls=[])]},
+#     next=('model_node',),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da2-651c-8003-79ec6ddef3d3'}},
+#     metadata={'source': 'loop', 'step': 3, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.685874+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da1-6ac2-8002-8a1d533f6737'}},
+#     tasks=(
+#         PregelTask(
+#             id='aa8e273e-235a-f77d-1ec1-3720a956f10e',
+#             name='model_node',
+#             path=('__pregel_pull', 'model_node'),
+#             error=None,
+#             interrupts=(),
+#             state=None,
+#             result={'messages': [AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='16d86465-0f7d-4e75-bdba-40e2be6c5051', tool_calls=[], invalid_tool_calls=[])]}
+#         ),
+#     ),
+#     interrupts=()
+# )
+# StateSnapshot(
+#     values={'messages': [AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='90e4a71d-a8d0-4b19-a88c-d5af4fafba75', tool_calls=[], invalid_tool_calls=[])]},
+#     next=('__start__',),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da1-6ac2-8002-8a1d533f6737'}},
+#     metadata={'source': 'input', 'step': 2, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.685609+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da0-630c-8001-e303899aa224'}},
+#     tasks=(PregelTask(id='ec81a1ac-d04c-d290-6744-ddf563c548f1', name='__start__', path=('__pregel_pull', '__start__'), error=None, interrupts=(), state=None, result={}),),
+#     interrupts=()
+# )
+# StateSnapshot(
+#     values={'messages': [AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='90e4a71d-a8d0-4b19-a88c-d5af4fafba75', tool_calls=[], invalid_tool_calls=[])]},
+#     next=(),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2da0-630c-8001-e303899aa224'}},
+#     metadata={'source': 'loop', 'step': 1, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.684998+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2d97-65d6-8000-4d5b70c84540'}},
+#     tasks=(),
+#     interrupts=()
+# )
+# StateSnapshot(
+#     values={'messages': []},
+#     next=('model_node',),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2d97-65d6-8000-4d5b70c84540'}},
+#     metadata={'source': 'loop', 'step': 0, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.681385+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2d95-67e0-bfff-3ac2f5131285'}},
+#     tasks=(
+#         PregelTask(
+#             id='01b28ebe-ba3b-6d53-4294-e432bb718aea',
+#             name='model_node',
+#             path=('__pregel_pull', 'model_node'),
+#             error=None,
+#             interrupts=(),
+#             state=None,
+#             result={'messages': [AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, tool_calls=[], invalid_tool_calls=[])]}
+#         ),
+#     ),
+#     interrupts=()
+# )
+# StateSnapshot(
+#     values={'messages': []},
+#     next=('__start__',),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a4f90-2d95-67e0-bfff-3ac2f5131285'}},
+#     metadata={'source': 'input', 'step': -1, 'parents': {}},
+#     created_at='2026-08-31T05:01:22.680619+00:00',
+#     parent_config=None,
+#     tasks=(PregelTask(id='dfb498b8-fcf2-935d-c985-ae5164698819', name='__start__', path=('__pregel_pull', '__start__'), error=None, interrupts=(), state=None, result={}),),
+#     interrupts=()
+# )
+for state in list(graph.get_state_history(config=config)):
+    rprint(state)
+```
+
+#### 获取检查点信息
+
+*   `get_state_history` 获取检查点的历史信息
+*   `get_state` 获取最新或者执行的检查点信息
+
+```py
+# StateSnapshot(
+#     values={
+#         'messages': [
+#             AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='023cb37e-15ea-4ee4-8321-183e464adf23', tool_calls=[], invalid_tool_calls=[]),
+#             AIMessage(content='第 2 次回复用户', additional_kwargs={}, response_metadata={}, id='f9279fef-8f03-48ff-af76-8411a9b15f1f', tool_calls=[], invalid_tool_calls=[])
+#         ]
+#     },
+#     next=(),
+#     config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a510d-ff32-65c2-8004-9947da5d2175'}},
+#     metadata={'source': 'loop', 'step': 4, 'parents': {}},
+#     created_at='2026-08-31T07:52:12.050984+00:00',
+#     parent_config={'configurable': {'thread_id': 'id_2', 'checkpoint_ns': '', 'checkpoint_id': '1f1a510d-ff31-669a-8003-ec5d0a041e62'}},
+#     tasks=(),
+#     interrupts=()
+# )
+result = graph.get_state(config=config)
+rprint(result)
+
+# 也可以选中任意的 checkpoint_id 构建一个 config 查询指定节点的 checkpoint
+target_config = {
+    "configurable": {
+        "thread_id": "id_2",
+        "checkpoint_id": "1f1a4f90-2da1-6ac2-8002-8a1d533f6737",
+    }
+}
+result = graph.get_state(config=target_config)
+rprint(result)
+```
+
+#### 检查点的保存策略
+
+常规来看，检查点保存的越早，可恢复能力就越高；保存的方案分为三种；
+
+*   `exit` 退出模式，只有运行结束或者中断的时候，才会保存；性能开销较低，但是程序运行过程中的错误无法捕获
+*   `async` 异步模式，在每个 `step` 运行之后异步写入检查点，并且会记录中间状态，默认值
+*   `sync` 下一步 `step` 开始前完成检查点的写入
+
+invoke 方法的第三个参数
+
+```py
+result = graph.invoke({}, config=config, durability="async")
+```
+
+#### 失败重新运行
+
+核心就是通过 `graph.invoke(None, config=config)` 用同样的 config 重新执行一遍
+
+```py
+import random
+from operator import add
+from typing import Annotated, TypedDict
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph
+from rich import print as rprint
+
+class State(TypedDict):
+    status: str
+    amount: Annotated[int, add]
+
+def node_1(state: State):
+    return {"status": "已下单"}
+
+def node_2(state: State):
+    if random.randint(0, 1):
+        return {"amount": -10}
+    raise ValueError("程序出现错误")
+
+graph = (
+    StateGraph(state_schema=State)
+    .add_node("node_1", node_1)
+    .add_node("node_2", node_2)
+    .set_entry_point("node_1")
+    .add_edge("node_1", "node_2")
+    .set_finish_point("node_2")
+    .compile(checkpointer=InMemorySaver())
+)
+
+config: RunnableConfig = {"configurable": {"thread_id": "1"}}
+try:
+    graph.invoke({"amount": 20, "status": "待下单"}, config=config)
+except ValueError as e:
+    print(e)
+
+# 程序出现错误
+# StateSnapshot(
+#     values={'status': '已下单', 'amount': 20},
+#     next=('node_2',),
+#     config={'configurable': {'thread_id': '1', 'checkpoint_ns': '', 'checkpoint_id': '1f1a51b6-2bde-603c-8001-a90b429c3a52'}},
+#     metadata={'source': 'loop', 'step': 1, 'parents': {}},
+#     created_at='2026-08-31T09:07:26.450688+00:00',
+#     parent_config={'configurable': {'thread_id': '1', 'checkpoint_ns': '', 'checkpoint_id': '1f1a51b6-2bdc-6ade-8000-46372c6ad81f'}},
+#     tasks=(PregelTask(id='6cca2724-3fe8-fa7a-e926-704e79798ca2', name='node_2', path=('__pregel_pull', 'node_2'), error="ValueError('程序出现错误')", interrupts=(), state=None, result=None),),
+#     interrupts=()
+# )
+rprint(graph.get_state(config=config))
+
+for state in list(graph.get_state_history(config=config)):
+    for task in state.tasks:
+        if task.error:
+            try:
+                # 重新执行，因为是 random 实现，所以还有可能出错
+                graph.invoke(None, config=config)
+            except ValueError as e:
+                print(e)
+# StateSnapshot(
+#     values={'status': '已下单', 'amount': 10},
+#     next=(),
+#     config={'configurable': {'thread_id': '1', 'checkpoint_ns': '', 'checkpoint_id': '1f1a51b6-2c01-6d66-8002-0c13724a7adb'}},
+#     metadata={'source': 'loop', 'step': 2, 'parents': {}},
+#     created_at='2026-08-31T09:07:26.465356+00:00',
+#     parent_config={'configurable': {'thread_id': '1', 'checkpoint_ns': '', 'checkpoint_id': '1f1a51b6-2bde-603c-8001-a90b429c3a52'}},
+#     tasks=(),
+#     interrupts=()
+# )
+rprint(graph.get_state(config=config))
+```
+
+#### 检查点回溯
+
+回溯方案有两种
+
+*   获取某个节点的 config 当做 invoke 的 config，从这个节点开始继续执行
+*   通过 `graph.update_state` 修改节点的信息、或者修改起始节点，然后继续传入某个节点的 config，从这个节点开始继续执行
+
+**二者都有一个共同点就是不会影响断点之前的节点运行结果**
+
+```py
+"""
+  示例代码：流程 goods_card → amount → buy → status
+          先拿到购物车数据、计算金额、开始付款、根据返回的正负数确定是否买得起
+"""
+from operator import add
+from typing import Annotated, TypedDict
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from loguru import logger
+
+class State(TypedDict):
+    amount: Annotated[int, add]
+    goods_card: Annotated[list[list], add]
+    status: str
+    buy: str
+
+def goods_card(state: State):
+    logger.info("goods_card, 购物车 {}", state["goods_card"])
+    return {"goods_card": state["goods_card"]}
+
+def amount(state: State):
+    for goods in state["goods_card"]:
+        # 假定购物车的每一项 数量, 金额
+        total_amount = goods[0] * goods[1]
+    logger.info("amount 商品总价, {}", total_amount)
+    return {"amount": -total_amount}
+
+def buy(state: State):
+    logger.info("buy, 付钱, 余额 {}", state["amount"])
+    return {"buy": "付钱"}
+
+def status(state: State):
+    status = "已付款" if state["amount"] > 0 else "买不起"
+    logger.info("status, 状态, {}", status)
+    return {"status": status}
+
+graph = (
+    StateGraph(state_schema=State)
+    .add_node("goods_card", goods_card)
+    .add_node("amount", amount)
+    .add_node("buy", buy)
+    .add_node("status", status)
+    .set_entry_point("goods_card")
+    .add_edge("goods_card", "amount")
+    .add_edge("amount", "buy")
+    .add_edge("buy", "status")
+    .set_finish_point("status")
+    .compile(checkpointer=InMemorySaver())
+)
+
+# 基于当前逻辑正常运行的输出是买不起的
+# 2026-08-31 18:18:21.611 | INFO     | __main__:goods_card:236 - goods_card, 购物车 [[2, 10]]
+# 2026-08-31 18:18:21.612 | INFO     | __main__:amount:244 - amount 商品总价, 20
+# 2026-08-31 18:18:21.612 | INFO     | __main__:buy:249 - buy, 付钱, 余额 -10
+# 2026-08-31 18:18:21.613 | INFO     | __main__:status:255 - status, 状态, 买不起
+config: RunnableConfig = {"configurable": {"thread_id": "1"}}
+graph.invoke({"amount": 10, "goods_card": [[2, 10]]}, config=config)
+```
+
+从某个节点继续执行，以下示例并不是解决能不能买得起的问题，而是验证图可以从某个节点开始，继续重新执行流程。
+
+```py
+# 从 buy 节点重新运行
+new_config = {}
+for state in list(graph.get_state_history(config=config)):
+    if state.next == ("buy",):
+        new_config = state.config
+# 将新的 config 传入
+# 除上面四条日志外，最后两条会继续输出，因为又运行了一次
+# 2026-08-31 18:20:20.921 | INFO     | __main__:buy:249 - buy, 付钱, 余额 -10
+# 2026-08-31 18:20:20.921 | INFO     | __main__:status:255 - status, 状态, 买不起
+graph.invoke(None, config=new_config)
+```
+
+通过 `graph.update_state` 解决买不起的问题，这个方法接受三个参数
+
+*   `config` 需要修改的的节点，也就是 `StateSnapshot` 中的 config
+*   `values` 需要传递给节点的信息
+*   `as_node` 从哪个节点的下一个节点开始重新执行，比如指定了 `START` 就表示从该节点的下一个节点执行
+
+```py
+# 修改状态继续从 buy 节点重新运行
+new_config = {}
+for state in list(graph.get_state_history(config=config)):
+    if state.next == ("buy",):
+        new_config = graph.update_state(
+            state.config,
+            values={"amount": 41},
+            # 可以指定任意节点，表示从该节点的下一个节点重新执行
+            # as_node=START, # 从 goods_card 开始执行
+            # as_node="goods_card",  # 从 amount 开始执行
+        )
+# 不指定 as_node 则是从 buy 节点重新运行一遍
+# 2026-08-31 18:25:51.326 | INFO     | __main__:buy:249 - buy, 付钱, 余额 31
+# 2026-08-31 18:25:51.326 | INFO     | __main__:status:255 - status, 状态, 已付款
+
+# 使用 START 可以看出从 goods_card 重新又执行了一遍
+# 2026-08-31 18:27:07.763 | INFO     | __main__:goods_card:236 - goods_card, 购物车 [[2, 10], [2, 10]]
+# 2026-08-31 18:27:07.763 | INFO     | __main__:amount:244 - amount 商品总价, 20
+# 2026-08-31 18:27:07.763 | INFO     | __main__:buy:249 - buy, 付钱, 余额 11
+# 2026-08-31 18:27:07.764 | INFO     | __main__:status:255 - status, 状态, 已付款
+graph.invoke(None, config=new_config)
+```
+
+### 长期记忆
+
+长期记忆的操作方法与 [Agent 长期记忆](https://juejin.cn/post/7665530652352921606#heading-5) 使用方式一致，在 langgraph 中访问长期记忆则是通过节点的 `runtime` 参数进行访问
+
+```py
+from typing import Literal, TypedDict
+from langgraph.graph import END, StateGraph
+from langgraph.runtime import Runtime
+from langgraph.store.memory import InMemoryStore
+from loguru import logger
+
+# 初始化 store 通过 put 创建数据
+store = InMemoryStore()
+store.put(("users",), "user_1", {"username": "zs"})
+store.put(("users",), "user_2", {"username": "ls"})
+
+class State(TypedDict):
+    users: list[dict]
+    is_del: bool
+
+def get_user(state: State, runtime: Runtime):
+    # 数据查询
+    result = runtime.store.search(("users",))
+    state["users"] = [i.value for i in result]
+    logger.info("查询用户, {}", state["users"])
+    return state
+
+def del_user(state: State, runtime: Runtime):
+    # 数据删除
+    runtime.store.delete(("users",), "user_1")
+    logger.info("删除用户, {}", "user_1")
+    return {"is_del": True}
+
+# 判断条件 is_del 要不要走 del_user 节点
+def should_continue(state: State) -> Literal["get_user", END]:  # type: ignore
+    return "del_user" if not state["is_del"] else END
+
+graph = (
+    StateGraph(state_schema=State)
+    .add_node("get_user", get_user)
+    .add_node("del_user", del_user)
+    .set_entry_point("get_user")
+    # 通过这个条件边，决定要不要走 del_user
+    .add_conditional_edges("get_user", path=should_continue, path_map=["del_user", END])
+    # 再绘制一条从 del_user 到 get_user 的边
+    # 保证删除后会调用 get_user 再查询一次
+    .add_edge("del_user", "get_user")
+    .compile(store=store) # 传入 store
+)
+
+graph.invoke({"users": [], "is_del": False})
+print(graph.get_graph().draw_mermaid())
+```
+
+![10.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/50e4a42825a54dbcb8eb512a3f56ce0f~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736820&x-orig-sign=WBf8VT6CwfX372FAT1dLZQ8FY5k%3D)
+
+## 流式输出
+
+与 `LangChain` 也基本保持一致，不过需要注意的是 `messages` 模式应该是仅适用于模型回复类型的流式输出；[Agent 流式输出](https://juejin.cn/post/7664150646268182582#heading-6)
+
+另外基于图的流式输出支持多模式输出，比如 `stream_mode=["updates", "values"]`
+
+```py
+from operator import add
+from typing import Annotated, TypedDict
+from langgraph.graph import StateGraph
+
+class State(TypedDict):
+    payment: str
+    amount: Annotated[int, add]
+    log_info: str
+
+def payment_node(state: State):
+    return {"payment": "已下单"}
+
+def amount_node(state: State):
+    return {"amount": -10}
+    
+def logger(state: State):
+    return {"log_info": f"商品 {state['payment']} 支付金额 {state['amount']}"}
+
+graph = (
+    StateGraph(state_schema=State)
+    .add_node("payment", payment_node)
+    .add_node("amount", amount_node)
+    .add_node("logger", logger, defer=True)
+    .set_entry_point("payment")
+    .add_edge("payment", "amount")
+    .add_edge("amount", "logger")
+    .set_finish_point("logger")
+    .compile()
+)
+
+result = graph.stream({"amount": 10, "payment": "待下单"}, stream_mode="updates")
+# updates 仅输出更新部分的内容
+# {'payment': {'payment': '已下单'}}
+# {'amount': {'amount': -10}}
+# {'logger': {'log_info': '商品 已下单 支付金额 0'}}
+for chunk in result:
+    print(chunk)
+    
+result = graph.stream({"amount": 10, "payment": "待下单"}, stream_mode="values")
+# values 会将每一步的全部状态都输出
+# {'payment': '待下单', 'amount': 10}
+# {'payment': '已下单', 'amount': 10}
+# {'payment': '已下单', 'amount': 0}
+# {'payment': '已下单', 'amount': 0, 'log_info': '商品 已下单 支付金额 0'}
+for chunk in result:
+    print(chunk)
+```
+
+*   `updates` 仅输出更新部分的内容
+*   `values` 会将每一步的全部状态都输出
+*   `debug` 节点运行前后的状态都会输出，并且会附带运行时间和 `step` 展示当前在第几步
+*   `tasks` 对比 `debug` 少了一些内部的数据，但节点运行前后的数据都会被输出
+
+`messages` 针对模型返回，每个 chunk 都是一个元组分别是 message 和 metadata 数据
+
+```py
+from langgraph.graph import MessagesState, StateGraph
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(
+    model="openai:kimi-k2.6",
+    base_url=os.environ.get("OPENAI_BASE_URL"),
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    extra_body={"thinking": {"type": "disabled"}},
+)
+
+class State(MessagesState):
+    question: str
+
+def model_node(state: State):
+    result = model.invoke(state["question"])
+    return {"messages": [result]}
+
+graph = (
+    StateGraph(state_schema=State)
+    .add_node("model_node", model_node)
+    .set_entry_point("model_node")
+    .set_finish_point("model_node")
+    .compile()
+)
+
+result = graph.stream({"question": "你好"}, stream_mode="messages")
+
+# (
+#   AIMessageChunk(content='你好', additional_kwargs={}, response_metadata={'model_provider': 'openai'}, id='lc_run--01a055f7-3d1d-7913-89d4-a0fb53dd5cdc', tool_calls=[], invalid_tool_calls=[], tool_call_chunks=[]),
+#   {'ls_integration': 'langchain_chat_model', 'langgraph_step': 1, 'langgraph_node': 'model_node', 'langgraph_triggers': ('branch:to:model_node',), 'langgraph_path': ('__pregel_pull', 'model_node'), 'langgraph_checkpoint_ns': 'model_node:07d4303d-cfa8-b735-1f77-9cadf92cf026', 'checkpoint_ns': 'model_node:07d4303d-cfa8-b735-1f77-9cadf92cf026', 'ls_provider': 'openai', 'ls_model_name': 'kimi-k2.6', 'ls_model_type': 'chat', 'ls_temperature': None, 'lc_versions': {'langchain-core': '1.4.9', 'langchain': '1.3.12', 'langchain-openai': '1.3.4'}}
+# )
+for chunk, graph_meta in result:
+    print(chunk.content, end="", flush=True)
+```
+
+## 补充 ContextSchema
+
+可以传入的节点上下文，该对象与 `State` 并立可以免除被 `reducer` 函数的干扰更加纯粹，实际场景中应该是传入一些通用的固定配置比较合理。
+
+另外对于 `Node` 的参数进行总结， 示例中打印出来的对象，针对一些没用的做出了删减；
+
+```py
+from typing import TypedDict
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph import StateGraph
+from langgraph.runtime import Runtime
+from loguru import logger
+from rich import print as rprint
+
+# 定义 context schema
+class ContextSchema(TypedDict):
+    c_name: str
+
+class StateSchema(TypedDict):
+    s_name: str
+
+# 节点中则是通过 Runtime 泛型可以拿到实际的参数
+def node_1(state: StateSchema, runtime: Runtime[ContextSchema], config: RunnableConfig):
+    # Runtime(
+    #     context={'c_name': 'context_name'},
+    #     store=None,
+    #     heartbeat=<function _no_op_heartbeat at 0x106470f40>,
+    #     previous=None,
+    #     execution_info=ExecutionInfo(
+    #         checkpoint_id='1f1a5b17-8d6b-67d6-8000-693307c39192',
+    #         checkpoint_ns='node_1:323ebb5d-7e1b-4084-73d5-d58960c367b8',
+    #         task_id='323ebb5d-7e1b-4084-73d5-d58960c367b8',
+    #         thread_id=None,
+    #         run_id=None,
+    #         node_attempt=1,
+    #         node_first_attempt_time=1788231708.032896
+    #     ),
+    #     server_info=None,
+    #     control=<langgraph.runtime.RunControl object at 0x1061906a0>
+    # )
+    rprint(runtime)
+
+    # {
+    #     'configurable': {
+    #         '__pregel_runtime': Runtime(
+    #             context={'c_name': 'context_name'},
+    #             store=None,
+    #             stream_writer=<function Pregel.stream.<locals>.stream_writer at 0x104185080>,
+    #             heartbeat=<function _no_op_heartbeat at 0x104070f40>,
+    #             previous=None,
+    #             execution_info=ExecutionInfo(
+    #                 checkpoint_id='1f1a5b1b-47b8-6c26-8000-0b63c79e79b7',
+    #                 checkpoint_ns='node_1:cd73b47d-3b46-570a-de92-46fd28805a53',
+    #                 task_id='cd73b47d-3b46-570a-de92-46fd28805a53',
+    #                 thread_id=None,
+    #                 run_id=None,
+    #                 node_attempt=1,
+    #                 node_first_attempt_time=1788231808.098697
+    #             ),
+    #             server_info=None,
+    #             control=<langgraph.runtime.RunControl object at 0x1040b6d10>
+    #         ),
+    #         '__pregel_checkpointer': None,
+    #         'checkpoint_map': {'': '1f1a5b1b-47b8-6c26-8000-0b63c79e79b7'},
+    #         'checkpoint_id': None,
+    #         'checkpoint_ns': 'node_1:cd73b47d-3b46-570a-de92-46fd28805a53',
+    #     'metadata': {
+    #         'langgraph_step': 1,
+    #         'langgraph_node': 'node_1',
+    #         'langgraph_triggers': ('branch:to:node_1',),
+    #         'langgraph_path': ('__pregel_pull', 'node_1'),
+    #         'langgraph_checkpoint_ns': 'node_1:cd73b47d-3b46-570a-de92-46fd28805a53'
+    #     },
+    #     'callbacks': <langchain_core.callbacks.manager.CallbackManager object at 0x10414d480>
+    # }
+    rprint(config)
+    logger.info("state: {}, context: {}", state, runtime.context)
+    return state
+
+graph = (
+    StateGraph(state_schema=StateSchema, context_schema=ContextSchema)
+    .add_node("node_1", node_1)
+    .set_entry_point("node_1")
+    .compile()
+)
+
+# ... __main__:node_1:375 - state: {'s_name': 'state_name'}, context: {'c_name': 'context_name'}
+# 调用 invoke 的时候需要把上下文对象传递进去
+graph.invoke({"s_name": "state_name"}, context={"c_name": "context_name"})
+```
+
+在 `runtime` 中目前也就使用过 `context` 和 `store`
+
+在 `config` 中之前有获取过节点的执行步骤 `config["metadata"]["langgraph_step"]` 虽然也能获取 `runtime` 对象，但看命名不像是标准属性。

@@ -1,0 +1,362 @@
+---
+title: "Agent 上下文记忆"
+description: 短期与长期记忆、会话作用域和上下文管理
+---
+
+模型本质上是没有记忆的，每次对话将之前的对话再塞给模型使模型看起来拥有了记忆；
+
+在 LangChain 中记忆分为**短期记忆、长期记忆** [官方说明](https://docs.langchain.com/oss/python/concepts/memory)
+
+*   短期记忆：作用于单个会话线程内，开启新对话或者更改 `thread_id` 记忆就会消失
+*   长期记忆：跨会话级别的记忆，可以在任意会话线程内访问，存储的是应用级别的数据
+
+> 比较容易混淆的点：短期记忆并不是内存存储，长期记忆也不是持久化存储，而是从会话的角度去决定记忆的作用域。
+
+![image-5.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/984442e8a43a4ebc96a90e65a905a113~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736653&x-orig-sign=htEELMlsSqKgXXcUvFxTKcdy5ro%3D)
+
+## 短期记忆
+
+默认支持 `InMemorySaver` 内存级别的存储，也支持数据库级别的存储，不过需要额外安装；以 `Postgres | Mongo` 为例，同时还支持 `Redis` 等
+
+### InMemorySaver
+
+**基于内存的短期记忆，每次执行记忆都会重置**
+
+```py
+from langgraph.checkpoint.memory import InMemorySaver
+
+agent = create_agent(
+  model,
+  checkpointer=InMemorySaver() # 定义 checkpointer 检查点
+)
+# 保证后续的会话都能使用同一个 thread_id
+config={"configurable": {"thread_id": "1"}}
+# 显示传入 config 参数
+agent.invoke({"messages": [HumanMessage("你好我是蟹老板")]}, config=config)
+result = agent.invoke({"messages": [HumanMessage("你知道我是谁吗？")]}, config=config)
+
+for message in result["messages"]:
+    print(message.pretty_print())
+
+# ================================ Human Message =================================
+
+# 你好我是蟹老板
+# ================================== Ai Message ==================================
+
+# 你好，蟹老板！🍔 我是你的AI助手，有什么需要帮忙的吗？是想聊聊蟹堡王的秘方，还是想吐槽海绵宝宝的调皮捣蛋？😄
+# ================================ Human Message =================================
+
+# 你知道我是谁吗？
+# ================================== Ai Message ==================================
+
+# 哈哈，按照设定，你可是比奇堡最精明的企业家、蟹堡王的创始人——蟹老板（Mr. Krabs）！....
+```
+
+### PostgresSaver
+
+**数据库的存储是持久化的，会将每次执行的数据都塞进数据库中，多次执行会出现重复数据**
+
+```shell
+pip install -U "psycopg[binary,pool]" langgraph langgraph-checkpoint-postgres
+
+# 基于 docker 的构建测试
+docker pull postgres      
+docker run --name postgres-langchain-db -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=admin123 -e POSTGRES_DB=lang -p 5432:5432 -d postgres
+```
+
+```py
+from langgraph.checkpoint.postgres import PostgresSaver
+
+# 协议://用户名:密码@地址:端口/数据库
+DB_URI = "postgresql://admin:admin123@localhost:5432/lang?sslmode=disable"
+with PostgresSaver.from_conn_string(DB_URI) as checkpointer:
+    # 首次启动时，要调用该方法，会自动创建数据库
+    checkpointer.setup()
+
+    agent = create_agent(
+        model,
+        checkpointer=checkpointer
+    )
+
+    config={"configurable": {"thread_id": "1"}}
+    agent.invoke({"messages": [HumanMessage("你好我是蟹老板")]}, config=config)
+    result = agent.invoke({"messages": [HumanMessage("你知道我是谁吗？")]}, config=config)
+
+    for message in result["messages"]:
+        print(message.pretty_print())
+
+#  lang 数据库中会多出这几个数据表
+#  public   | checkpoint_blobs      | 数据表 | admin
+#  public   | checkpoint_migrations | 数据表 | admin
+#  public   | checkpoint_writes     | 数据表 | admin
+#  public   | checkpoints           | 数据表 | admin
+```
+
+*   `checkpoints` 这是主表，存每个 thread 在某个时刻的 checkpoint 快照。
+*   `checkpoint_blobs` 存不适合直接内联进 `checkpoints.checkpoint` 的复杂 channel 值
+*   `checkpoint_writes` 中间表，不是最终完整的 checkpoint
+*   `checkpoint_migrations` 迁移版本表
+
+### MongoDBSaver
+
+```shell
+pip install -U pymongo langgraph langgraph-checkpoint-mongodb
+
+# 基于 docker 的构建测试
+docker pull mongo
+docker run --name mongo-langchain-db -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD=admin123 -e MONGO_INITDB_DATABASE=lang -p 27017:27017 -d mongo
+```
+
+```py
+from langgraph.checkpoint.mongodb import MongoDBSaver
+
+with MongoDBSaver.from_conn_string(DB_URI) as checkpointer:
+
+    agent = create_agent(
+        model,
+        checkpointer=checkpointer
+    )
+
+    config={"configurable": {"thread_id": "1"}}
+
+    agent.invoke({"messages": [HumanMessage("你好我是蟹老板")]}, config=config)
+    result = agent.invoke({"messages": [HumanMessage("你知道我是谁吗？")]}, config=config)
+
+    for message in result["messages"]:
+        print(message.pretty_print())
+```
+
+### 上下文治理策略裁剪、删除、摘要
+
+对于上下文信息不敏感的场景可以使用 `before_model` 定期**裁剪**一些消息，让上下文始终保持健康阈值
+
+**删除** 则是配合 `after_model` 删除明确要被模型清理的一些历史，比如意义不大的工具调用
+
+```py
+from langchain.agents import AgentState
+from langgraph.runtime import Runtime
+from langchain.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+@before_model
+def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    # 提取最后一条记录
+    new_messages = state["messages"][-1]
+    return {
+        "messages": [
+            # 删除消息, REMOVE_ALL_MESSAGES 删除全部标识
+            # 也可以是某个 message 的 id id=new_messages.id
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            new_messages
+        ]
+    }
+    
+agent = create_agent(
+    model,
+    checkpointer=InMemorySaver(),
+    middleware=[trim_messages]
+)
+
+config={"configurable": {"thread_id": "1"}}
+agent.invoke({"messages": [HumanMessage("你好我是蟹老板")]}, config=config)
+result = agent.invoke({"messages": [HumanMessage("你知道我是谁吗？")]}, config=config)
+
+for message in result["messages"]:
+    print(message.pretty_print())
+# 每次刚有消息就被删了，AI 永远都不知道我是谁， AI 只能回复最后一个问题
+# ================================ Human Message =================================
+
+# 你知道我是谁吗？
+# None
+# ================================== Ai Message ==================================
+
+# 抱歉，我无法得知你的具体身份信息。作为AI助手，我不会主动询问或记录用户的个人信息，每次对话都是匿名的。如果你希望我以某种特定方式与你交流（比如使用称呼或角色设定），可以随时告诉我，我会尽力配合！ 😊 有什么我可以帮助你的吗？
+# None
+```
+
+摘要则是通过 `SummarizationMiddleware` 内置中间件完成
+
+```py
+agent = create_agent(
+    model,
+    checkpointer=InMemorySaver(),
+    middleware=[SummarizationMiddleware(model, trigger=[('tokens', 20)], keep=('messages', 2))]
+)
+```
+
+## 长期记忆
+
+LangChain 将长期记忆划分为三类
+
+*   语义记忆 记录事实/用户偏好/概念，比如中文回答、某个行业回答
+*   情景记忆 即经验类记忆，给出成功或者期望的输入输出示例
+*   程序性记忆 规则/做事方法，系统提示词工作流程等
+
+存储的结构是 `store -> namespace -> key -> value` 按照命名空间的方式，将 key value 存在 store 中，value 可以是任意的值
+
+同样基于内存或者基于数据库，常用的方法有四个 `get | put | search | delete`
+
+`namespace` 是一个元组，有点类似于文件路径的意思；
+
+```py
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore()
+
+# 将数据提交到 store
+store.put(('users',), key="user_1", value={"name": "zhangsan", "age": 10})
+# 获取某个 namespace 下的 value，返回结果是一个 Item 对象
+ret = store.get(("users",), key="user_1")
+"""
+Item(
+    namespace=['users'], 
+    key='user_1', 
+    value={'name': 'zhangsan', 'age': 10}, 
+    created_at='2026-07-23T09:17:52.158262+00:00', 
+    updated_at='2026-07-23T09:17:52.158266+00:00'
+)
+"""
+
+# 删除某个 namespace 下的 value
+store.delete(("users", ), "user_1")
+```
+
+相同的命名空间和 key 下，在内存 store 中创建和更新时间始终保持一致，仅修改数据，在数据库 store 中更新时间会不断调整
+
+`search` 方法则支持以下参数检索，返回的值是 Item 的列表对象。
+
+*   `namespace_prefix` 命名空间前缀
+*   `query` 语义化检索，需要将数据先转换为向量
+*   `filter` value 中的键值对组合过滤
+*   `limit | offset` 偏移和条数，默认值是 `10 | 0`
+
+```py
+store = InMemoryStore()
+
+store.put(("users", 'zhangsan'), key="hobby", value={"learn": "计算机组成原理", "food": "大米饭", "sports": "撸铁"})
+store.put(("users", 'lisi'), key="hobby", value={"learn": "计算机组成原理", "food": "大米饭", "sports": "撸铁"})
+store.put(("users", 'wanger'), key="hobby", value={"learn": "数据库原理", "food": "辣椒炒肉", "sports": "跑步"})
+store.put(("users", 'mazi'), key="hobby", value={"learn": "数据库原理", "food": "辣椒炒肉", "sports": "跑步"})
+
+result = store.search(("users",)) # 搜所有
+result = store.search(("users", "zhangsan")) # 搜 张三 数据
+# users 前缀中搜 value 包含 "learn": "数据库原理" 的数据
+# 仅支持字典类型
+result = store.search(("users",), filter={"learn": "数据库原理"})
+rprint(result)
+```
+
+```py
+from langchain.embeddings import init_embeddings
+
+# 向量模型，使用本地部署的 ollama
+# 需要安装 langchain-ollama
+embedding_model = init_embeddings("ollama:qwen3-embedding:0.6b")
+
+store = InMemoryStore(index={
+    "embed": embedding_model,
+    "dims": 3072,
+    "fields": ["$"]
+})
+
+# 会按照 score 向量相似度降序排序
+result = store.search(("users",), query="计算机")
+# [
+#     Item(namespace=['users', 'zhangsan'], key='hobby', value={'learn': '计算机组成原理', 'food': '大米饭', 'sports': '撸铁'}, 
+# created_at='2026-07-23T09:55:57.806724+00:00', updated_at='2026-07-23T09:55:57.806728+00:00', score=0.521152212238013),
+#     Item(namespace=['users', 'lisi'], key='hobby', value={'learn': '计算机组成原理', 'food': '大米饭', 'sports': '撸铁'}, 
+# created_at='2026-07-23T09:55:57.952264+00:00', updated_at='2026-07-23T09:55:57.952272+00:00', score=0.5211076096818412),
+#     Item(namespace=['users', 'wanger'], key='hobby', value={'learn': '数据库原理', 'food': '辣椒炒肉', 'sports': '跑步'}, 
+# created_at='2026-07-23T09:55:58.134267+00:00', updated_at='2026-07-23T09:55:58.134276+00:00', score=0.3647832969884357),
+#     Item(namespace=['users', 'mazi'], key='hobby', value={'learn': '数据库原理', 'food': '辣椒炒肉', 'sports': '跑步'}, 
+# created_at='2026-07-23T09:55:58.249871+00:00', updated_at='2026-07-23T09:55:58.249879+00:00', score=0.36476943757005204)
+# ]
+```
+
+### Agent 使用 store
+
+```py
+# 内存
+agent = create_agent(
+  model,
+  store=InMemoryStore()
+)
+
+# postgres
+with PostgresStore.from_conn_string(DB_URI) as store:
+    agent = create_agent(
+        model,
+        store=store
+    )
+
+    result = agent.invoke({"messages": [HumanMessage("你好, 我是海绵宝宝")]})
+    for message in result["messages"]:
+        print(message.pretty_print())
+```
+
+### 工具中访问 store
+
+通过 `ToolRuntime` 访问 store 的信息，除此之外还能访问 `store | state | tools`
+
+state 中包含了 message 和用户通过 `state_schema` 拓展的消息
+
+```py
+@tool
+def save_user(name: str, runtime: ToolRuntime) -> str:
+    """保存用户信息"""
+    runtime.store.put(("users",), key=runtime.state["user_id"], value={"name": name})
+    return 'saved'
+
+@tool
+def get_user(runtime: ToolRuntime) -> str:
+    """获取用户信息"""
+    user = runtime.store.get(("users",), key=runtime.state["user_id"])
+    return str(user) if user else 'unknown'
+    
+
+# 拓展 state 的内容
+class CustomState(AgentState):
+    user_id: NotRequired[str]
+
+agent = create_agent(
+  model,
+  store=InMemoryStore(),
+  state_schema=CustomState,
+  tools=[save_user, get_user],
+  system_prompt="用户提及个人信息时及时记录，用户询问个人信息时尝试用工具检索"
+)
+
+agent.invoke({
+    "messages": [HumanMessage("你好, 我是海绵宝宝~")], 
+    "user_id": "1" # 会被存放在 runtime.state
+})
+result = agent.invoke({
+    "messages": [HumanMessage("我是谁？")],
+    "user_id": "1" # 会被存放在 runtime.state
+})
+
+for message in result["messages"]:
+    print(message.pretty_print())
+```
+
+### 中间件中访问 store
+
+NodeStyle 风格的钩子通过第二个参数 Runtime 去访问
+
+WrapStyle 风格的钩子通过第一个参数 ModelRequest 去访问
+
+```py
+@before_model
+def custom_node_middleware(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    # state["messages"] // state["user_id"] 自定义属性
+    # runtime.store
+    pass
+
+@wrap_model_call
+def custom_wrap_middleware(request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse | AIMessage:
+    # request.messages
+    # request.runtime.store
+    # request.state
+    # request.state["messages"] // state["user_id"] 自定义属性
+    pass
+```

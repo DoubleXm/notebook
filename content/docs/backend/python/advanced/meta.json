@@ -1,0 +1,8 @@
+{
+  "title": "Python 进阶教程",
+  "description": "类型注解与语法进阶",
+  "icon": "Boxes",
+  "pages": [
+    "type-annotations"
+  ]
+}

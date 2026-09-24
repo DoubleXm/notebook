@@ -1,0 +1,273 @@
+---
+title: "链式调用 LCEL"
+description: LangChain Expression Language 与 Runnable 链式调用
+---
+
+**LCEL -> LangChain Expression Language**是 LangChain 的一种表达式语言，用于定义和执行链式调用。它允许用户以声明性方式描述复杂的操作流程，并将这些操作组合成一个可执行的链。
+
+从表现上看，在 LangChain 中继承了 `Runnable` 的类都可以被视为一个“链”，还有一个特点是都实现了 `invoke | stream | batch` 和对应异步方法的类都可以被视为一个“链”。
+
+在 `python` 中的使用方案为 `|` 有点和 linux shell 中的管道符类似，将上一个指令的输出作为下一个指令的输入。在 `ts` 中则是通过 `pipe` 方法来实现链式调用。
+
+## parser 输出解析器
+
+与 `with_structured_output` 不同的是 `parser` 是模型输出后对输出的内容解析；比较依赖提示词的设计，常用的输出解析器有：
+
+- `StrOutputParser` 将输出解析为字符串。
+- `JsonOutputParser` 将输出解析为 JSON 对象。
+- `PydanticOutputParser` 将输出解析为 Pydantic 模型实例。
+
+```py
+from langchain.chat_models import init_chat_model
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser, PydanticOutputParser
+
+model = init_chat_model(
+  "openai:kimi-k2.6", 
+  extra_body={"thinking": {"type": "disabled"}} # 关闭深度思考
+)
+
+# ========== StrOutputParser ==========
+
+# block
+result = model.invoke("简短的介绍一下海绵宝宝")
+str_result = StrOutputParser().invoke(result)
+print(str_result) # 如果不使用 StrOutputParser 直接打印 result 会是一个包含 content, metadata 等信息的字典
+
+# stream
+result = model.stream("简短的介绍一下海绵宝宝")
+for chunk in result:
+  str_chunk = StrOutputParser().stream(chunk)
+  for message in str_chunk:
+    print(message, end="", flush=True)
+
+# ========== JsonOutputParser ==========
+
+# 通过提示词约束模型的输出，JsonOutputParser 解析，即便模型返回的可能是一个 json 字符串
+result = model.invoke("简短的介绍一下海绵宝宝, 输出 json 格式内容")
+str_result = JsonOutputParser().invoke(result)
+rprint(str_result)
+  
+# ========== PydanticOutputParser ==========
+```
+
+### PydanticOutputParser
+
+该方案需要配合 `ChatPormptTemplate` 使用，借助 `get_format_instructions` 方法获取提示词中需要的格式化指令，来约束模型输出的内容。
+
+```py
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
+
+# pydantic 模型定义
+class Person(BaseModel):
+  name: str = Field(description="姓名")
+  address: str = Field(description="地址")
+  skills: list[str] = Field([], description="技能列表")
+
+
+# 定义 parser 和 prompt 模板
+parser = PydanticOutputParser(pydantic_object=Person)
+prompt_template = ChatPromptTemplate([("human", "介绍一下比奇堡的蟹老板, {format_json}")])
+
+# 填充 prompt 模板
+prompt_value = prompt.invoke({"format_json": parser.get_format_instructions()})
+# get_format_instructions 会返回一段描述，告诉模型输出的内容符合定义的 pydantic 格式：
+# 
+# The output should be formatted as a JSON instance that conforms to the JSON schema below.
+# As an example, for the schema ... code-block:: json
+
+# 调用模型
+result = model.invoke(prompt_value)
+# 解析模型输出
+person: Person = parser.invoke(result)
+# 可以直接访问 pydantic 实例化后模型的属性
+print(person.name, person.address, person.skills)
+```
+
+## 链式调用 Runnable
+
+根据工作流最常见的场景是 `prompt | llm | parser` 就是将提示词传递给模型然后再做输出内容的解析，实际使用的过程中可以少，但顺序是固定的，
+
+从 `PydanticOutputParser` 表现看 `prompt.invoke | model.invoke | parser.invoke` 实际上就可以使用链式语法糖去优化，这也是 LCEL 的核心思想。
+
+```py
+# ========== 无链式调用 ==========
+parser = PydanticOutputParser(pydantic_object=Person)
+prompt_template = ChatPromptTemplate([("human", "介绍一下比奇堡的蟹老板, {format_json}")])
+
+# invoke 三次
+prompt_value = prompt.invoke({"format_json": parser.get_format_instructions()})
+result = model.invoke(prompt_value)
+person: Person = parser.invoke(result)
+
+
+# ========== 链式调用 ==========
+chain = prompt | model | parser
+# 通过 chain.invoke 把参数传递进去仅调用一次即可
+result: Person = chain.invoke({"format_json": parser.get_format_instructions()})
+print(result.model_dump_json(indent=2))
+# {
+#   "name": "蟹老板（尤金·H·蟹，Eugene H. Krabs）",
+#   "address": "比奇堡（Bikini Bottom）蟹堡王餐厅（Krusty Krab）",
+#   "skills": [
+#     "经营管理",
+#     "制作蟹黄堡秘方",
+#     "赚钱与省钱",
+#     "讨价还价",
+#     "驾驶教学（海绵宝宝的驾校教练）",
+#     "发明创造（偶尔）",
+#     "航海经验"
+#   ]
+# }
+```
+
+### RunnableBranch 条件链式
+
+接收分支参数，每个分支是一个元组，第一个参数为条件函数，第二个参数为 `Runnable` 对象，条件满足则执行该 `Runnable`，否则看下一个分支；都不满足执行默认分支。
+
+也就是最后一个参数，该参数为一个 `Runnable` 对象，作为默认分支。
+
+```py
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnable import RunnableBranch
+
+branch = RunnableBranch(
+  # 分支一
+  (
+    # x = {"question": "今天的天气怎么样？"}
+    lambda x: "天气" in x["question"],
+    ChatPromptTemplate([("human", "天气查询 {question}")]) | model
+  ),
+  # 分支二
+  (
+    lambda x: "计算" in x["question"], 
+    ChatPromptTemplate([("human", "数学计算 {question}")]) | model
+  ),
+  # 默认分支
+  ChatPromptTemplate([("human", "通用回答 {question}")]) | model
+)
+
+result = branch.invoke({"question": "今天天气怎么样？"})  # 走天气分支
+result = branch.invoke({"question": "1+1等于多少？"}) # 走计算分支
+result = branch.invoke({"question": "你好"}) # 走默认分支  
+```
+
+### RunnableParallel 并行链式
+
+同时执行多个 `Runnable`，并将结果合并为一个对象返回，任务之间互相不依赖
+
+```py
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnable import RunnableParallel
+
+parallel = RunnableParallel(
+  summary= ChatPromptTemplate([("human", "总结 {text}")]) | model | StrOutputParser(),
+  keywords=ChatPromptTemplate([("human", "提取关键词 {text}")]) | model | StrOutputParser(),
+)
+
+result = parallel.invoke({"text": "今天天气怎么样"})
+print(result) # 返回一个包含 summary 和 keywords 的字典
+
+# 获取图方式的执行流程，需要安装 uv add grandalf   
+print(parallel.get_graph().draw_ascii())
+#             +---------------------------------+            
+#             | Parallel<summary,keywords>Input |            
+#             +---------------------------------+            
+#                    ***               ***                   
+#                 ***                     ***                
+#               **                           **              
+# +--------------------+              +--------------------+ 
+# | ChatPromptTemplate |              | ChatPromptTemplate | 
+# +--------------------+              +--------------------+ 
+#            *                                   *           
+#            *                                   *           
+#            *                                   *           
+#     +------------+                      +------------+     
+#     | ChatOpenAI |                      | ChatOpenAI |     
+#     +------------+                      +------------+     
+#            *                                   *           
+#            *                                   *           
+#            *                                   *           
+#   +-----------------+                 +-----------------+  
+#   | StrOutputParser |                 | StrOutputParser |  
+#   +-----------------+                 +-----------------+  
+#                    ***               ***                   
+#                       ***         ***                      
+#                          **     **                         
+#            +----------------------------------+            
+#            | Parallel<summary,keywords>Output |            
+#            +----------------------------------+  
+```
+
+### RunnableSequence 顺序链式
+
+执行多个 `Runnable`，返回一个结果，`Runnable` 之间下一个输入来自上一个的输出
+
+```py
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnable import RunnableSequence
+
+# 有点像声明式的 prompt | model | parser
+sequence = RunnableSequence(
+  ChatPromptTemplate([("human", "将 {content} 翻译为英文, 不要有多余的解释仅输出英文")]),
+  model | StrOutputParser()
+)
+
+result = sequence.invoke({"content": "你好"})
+print(result)
+```
+
+### RunnableLambda、@chain 包装 Runnable
+
+有时候也需要一些自定义的逻辑处理需要融入到链式调用中，可以使用 `RunnableLambda | @chain` 将函数包装成 `Runnable` 对象，融入到链式调用中。
+
+```py
+from langchain_core.runnable import RunnableLambda, chain
+
+@chain
+def upper(s: str):
+  return s.upper()
+
+sequence = RunnableSequence(
+  ChatPromptTemplate([("human", "将 {content} 翻译为英文, 不要有多余的解释仅输出英文")]),
+  model | StrOutputParser(),
+  upper # 格式化输出后就会调用该函数
+  RunnableLambda(lambda x: x.upper()) # 也可以使用 RunnableLambda 包装一个 lambda 函数
+)
+```
+
+## 总结
+
+在 `create_agent` 流行的当下，链式调用的概念虽然非常重要，但在实际使用中并不多见了；
+
+以前熟知的 `prompt | llm | parser` 这种链式调用在 `create_agent` 中都已经存在。对于应用开发而言可以说几乎无用武之地了。
+
+不过思想仍然值得学习，对于一些流程编排也可以考虑使用，比如 RAG 文档上传步骤，实际也是屎上雕花，哈哈~
+
+```py
+from langchain_core.runnable import RunnableLambda, RunnableSequence
+
+# 加载文档
+def load_documents(file_path): pass
+# 切割文档
+def split_documents(documents): pass
+# 生成向量
+def generate_vectors(documents): pass
+# 存储向量
+def store_vectors(vectors): pass
+
+# 流程组装
+def process_documents():
+  documents = RunnableLambda(load_documents)
+  split_docs = RunnableLambda(split_documents)
+  vectors = RunnableLambda(generate_vectors)
+  store_vectors = RunnableLambda(store_vectors)
+
+  # 组装流程
+  process_chain = RunnableSequence(documents, split_docs, vectors, store_vectors)
+  # or
+  process_chain = documents | split_docs | vectors | store_vectors
+  # 开始处理
+  process_chain.invoke("path/to/file")
+```

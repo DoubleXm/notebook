@@ -1,0 +1,12 @@
+{
+  "title": "Python 自动化",
+  "description": "接口请求、Web UI 与测试框架",
+  "icon": "FlaskConical",
+  "pages": [
+    "requests",
+    "playwright",
+    "unittest",
+    "pytest-basics",
+    "pytest-advanced"
+  ]
+}

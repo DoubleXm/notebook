@@ -1,0 +1,17 @@
+{
+  "title": "Nest",
+  "description": "控制器、Provider、中间件与拦截器等核心概念",
+  "icon": "ServerCog",
+  "pages": [
+    "getting-started",
+    "controller",
+    "provider-and-module",
+    "middleware",
+    "exception-filter",
+    "pipe",
+    "guard",
+    "interceptor",
+    "custom-decorator",
+    "rxjs"
+  ]
+}

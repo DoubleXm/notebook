@@ -1,0 +1,18 @@
+{
+  "title": "组件库开发",
+  "description": "从零实现的 React 组件与组件库工程实践",
+  "icon": "Blocks",
+  "pages": [
+    "storybook",
+    "date-picker-panel",
+    "calendar",
+    "icon",
+    "space",
+    "watermark",
+    "mutate-observer",
+    "portal",
+    "copy-to-clipboard",
+    "lazy-load",
+    "unit-test"
+  ]
+}

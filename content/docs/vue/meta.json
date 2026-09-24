@@ -1,0 +1,11 @@
+{
+  "title": "Vue",
+  "description": "响应式、组件、路由与状态管理",
+  "root": true,
+  "icon": "Component",
+  "pages": [
+    "index",
+    "pinia",
+    "router"
+  ]
+}

@@ -1,0 +1,163 @@
+---
+title: 'QUICK START'
+description: 'MySQL 连接、基本命令与字符集配置'
+---
+
+## 安装
+
+以学习语句为主，其他为辅；所以直接使用 `docker` 构建一个 `MySQL` 的容器进行学习；
+
+```bash
+docker run -d \
+  --name mysql80 \
+  -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=123456 \
+  -v mysql_data:/var/lib/mysql \
+  mysql:8.0
+```
+随便找个客户端连接即可，或者使用命令行连接，但是要先进入容器；
+
+## 统一字符编码
+
+通过命令行进入后输入 `\s` 会显示字符编码；
+
+```bash
+mysql -u root -p
+
+\s
+
+# Server characterset:    utf8mb4
+# Db     characterset:    utf8mb4
+# Client characterset:    latin1
+# Conn.  characterset:    latin1
+```
+
+通过 `SET NAMES utf8mb4;` 指令将字符集统一调整
+
+## 了解 SQL 语句
+
+```sql
+-- 1. 双横杠就是 sql 的单行注释
+-- 2. /** */ 是多行注释
+-- 3. sql 的语句要以 ; 结尾， 比如 show databases;
+
+-- 库 - 可以看做文件夹
+-- 表 - 可以看做文件
+-- 记录 - 可以看做文件中的一行行数据
+```
+
+在指令中有一些常用的小指令，提升体验；
+
+```bash
+# 当有些语句输入错误时，不想被执行可以后面增加 \c 让这条语句失效
+# 可以通过 control + c
+show balbal\c
+
+# 查看数据库编码以及其他信息
+\s
+
+# 退出连接的两个指令
+exit; quit;
+```
+
+## 库操作
+
+```sql
+-- 创建数据库名称为 db1 charset 指定字符编码
+create database db1 charset=utf8;
+
+-- 查所有数据库
+show databases;
+-- 查单个数据库，创建这个数据库时的 sql 语句
+show create database db1;
+
+-- 数据库只能修改字符编码
+alter database db1 charset=gbk;
+
+-- 删除数据库
+drop database db1;
+```
+
+## 表操作
+
+操作表之前要先知道表在哪个数据库中；进入到指定的数据库中进行操作。
+
+```sql
+select database(); -- 查看当前所在数据库
+use db1; -- 切换到指定数据库
+```
+
+```sql
+-- 创建表: 创建一个名为 movies 的表，里面包含两个字段
+create table movies(id int, age char);
+
+-- 查看所有表
+show tables;
+show create table movies; -- 查看表的创建语句
+describe movies; -- 查看一张表的结构
+desc movies; -- 查看一张表的结构
+
+-- 表字段操作
+alter table movies modify age char(4); -- 修改某个字段的字符长度
+alter table movies change age Age char(5); -- 修改某个字段的名称
+alter table movies drop name; -- 删除字段
+alter table movies add name char(10); -- 新增字段
+
+-- 修改表
+alter table movies rename new-movies; -- 修改表名
+alter table movies engine=innodb; -- 修改存储引擎
+
+-- 删除表
+drop table movies;
+
+-- 复制表数据
+create table new-movies select * from db1; -- 将 db1 的查询数据全部复制到 new-movies
+
+-- 复制表结构
+create table new-movies like db1; -- 将 db1 的表结构复制到 new-movies
+```
+
+### 存储引擎
+
+表的类型就是存储引擎；默认使用 `InnoDB` 支持事务、行锁、外键；
+
+```sql
+show engines; # 查看所有的存储引擎
+
+create table t1(id int, name char(10)) engine=innodb;
+-- 做索引使用，后来 innodb 支持后基本不再使用
+create table t2(id int, name char(10)) engine=myisam;
+-- 内存存储数据； 断点或重启数据丢失
+create table t3(id int, name char(10)) engine=memory;
+-- 不存储数据
+create table t4(id int, name char(10)) engine=blackhole;
+```
+
+## 操作记录
+
+```sql
+-- 插入数据
+insert into movies values(1, '流浪地球');
+insert into movies values(1, '流浪地球'), (2, '三体'); -- 多条记录
+-- 如果不想每次都输入多个值，前提是 id 是自增或者有默认值或者可以为 null
+insert into movies(name) values ('哪吒')
+
+-- 查询数据
+select * from movies; -- * 标识所有
+select id, name from movies; -- 查看指定字段
+
+-- 修改数据
+update movies set name='满江红' where id=1; -- 要有 where 增加限定条件不然就全改了
+
+-- 删除数据
+delete from movies where name='三体'; -- 要有 where 增加限定条件不然就清空了
+```
+
+## SQL 语句分类
+
+| 类型 | 描述 | 关键字 |
+| ------------- | :-----------: | ------------- | 
+| DDL | 数据库定义语言，用来定义和管理数据库或者数据表 | `create alter drop` |
+| DML | 数据库操纵语言，用来操作数据 | `insert update delete` |
+| DQL | 数据库查询语言，用来查询数据 | `select` |
+| DCL | 数据库控制语言，权限控制 | `grant revoke commit rollback` |

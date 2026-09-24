@@ -1,0 +1,276 @@
+---
+title: 'Verdaccio 搭建 npm 私有仓库'
+description: '私有 npm 仓库的搭建、配置、权限与包发布'
+---
+
+### 前言
+
+> 为什么要搭建私有仓库？
+>
+> 日常开发中我们肯定会封装一些通用组件，大部分情况下都会存在于 `components` 目录下；试想一下如果我们有两个系统 A 和 B，此时这两个系统都要用到的组件我们该如何封装呢？
+>
+> 这种情况下我们还是开发一个包托管到 npm 比较靠谱，随用随下载。但是这些组件有一定的隐私性，我们又不想让别人看到。此时 `Verdaccio` 的好处就体现出来了。
+>
+> `Verdaccio` 是一个 `Node.js` 创建的轻量级 npm 仓库（就是一个应用支持独立部署安装）。可以快速帮助我们搭建一个类似于 [npm](https://www.npmjs.com/) 的网页应用程序用于托管我们的包
+
+### 前置条件
+
+本文介绍 `Verdaccio` 为 5.x 版本；示例演示系统为 阿里云 CentOS。由于此软件是基于 `Node.js` 开发，需要现在服务器安装 `Node.js` 并确保版本为 12.x。
+
+提示：推荐使用 nvm 管理 node 版本；[安装 nvm](https://github.com/nvm-sh/nvm)
+
+### 安装 `Verdaccio`
+
+```bash
+# 必须要加 -g 全局安装
+npm install verdaccio -g
+```
+
+安装成功之后随即在命令行输出 `verdaccio` 随即我们会看到服务已经运行；出现以下内容
+
+![verdaccio 启动后的输出信息](/frontend-engineering/verdaccio/verdaccio-startup.png)
+
+根据服务启动后信息不难得到两个重要信息
+
+- `verdaccio` 配置文件：`/root/.config/verdaccio/config.yaml`
+
+- `verdaccio` 默认启动：默认占用 4873 端口（使用云服务器的小伙伴记得开启安全组）。
+
+**注意：** 可能有些小伙伴的启用端口前面显示的是 `localhost:4873`，如果出现这种情况打开安全组也是不生效的，以下附上解决方案。
+
+> 使用 vim 打开配置文件。在最后一行新增 `listen 0.0.0.0:4873`，端口可以任意指定。`0.0.0.0` 就是表示当前主机的 IPV4 地址；之后再重启服务就，在浏览器输入服务器 IP 加端口就可以访问了。
+
+此时访问服务启动地址，就安装完成啦 ~ 当然仅仅是这样还是完全不够的，我们接着往下看。
+
+![verdaccio 的 Web 界面](/frontend-engineering/verdaccio/verdaccio-web-ui.png)
+
+### 使用 `pm2` 管理 `verdaccio`
+
+此时我们虽然能够访问到 npm 私服，但是有个很严重的问题，就是启动服务后在命令行中不能进行其他操作。这里推荐使用 pm2 对 `verdaccio` 进程进行管理。当然[官网](https://verdaccio.org/zh-CN/docs/server-configuration)也推荐我们使用另一个工具 [forever](https://www.npmjs.com/package/forever) 。
+
+[pm2](https://www.npmjs.com/package/pm2) 基于 `Node.js` 的进程管理工具。这里简单列举常用命令，不做过多介绍。
+
+下载：`npm install pm2 -g`
+
+| 指令                                                      | 描述                          | 示例                    |
+| --------------------------------------------------------- | ----------------------------- | ----------------------- |
+| `pm2 -ls`                                                 | 列出当前被 pm2 管理的所有进程 |                         |
+| `pm2 stop <app_name \| namespace\|id\|'all'\|json_conf>`  | 关闭某个进程                  | `pm2 stop vardaccio`    |
+| `pm2 restart <app_name\|namespace\|id\|'all'\|json_conf>` | 重启某个进程                  | `pm2 restart verdaccio` |
+| `pm2 delete <app_name\|namespace\|id]\|'all'\|json_conf>` | 删除某个进程                  | `pm2 delete verdaccio`  |
+| `pm2 start <app_name\|namespace\|id\|'all'\|json_conf>`   | 启动某个进程                  | `pm2 start verdaccio`   |
+
+### 启动参数
+
+`verdaccio` 只是默认的启动的方式。它还包含了一些其他的参数。
+
+```bash
+verdaccio --listen 4000 --config ~./config.yaml
+```
+
+| 参数              | 默认值                                | 示例              | 描述                       |
+| ----------------- | ------------------------------------- | ----------------- | -------------------------- |
+| `--listen` / `-l` | 4873                                  | `-l 8888`         | 监听端口                   |
+| `--config` / `-c` | `/root/.config/verdaccio/config.yaml` | `-c /config.yaml` | 配置文件路径               |
+| `--info` / `-i`   |                                       | `-i`              | 输出当前运行环境的系统信息 |
+
+### 配置文件
+
+以下是整个配置文件，我将以注释的形式，尽可能完善它。**重点建议反复观看查阅**
+
+```bash
+# This is the default config file. It allows all users to do anything,
+# so don't use it on production systems.
+#
+# Look here for more config file examples: 这个 examples 404了。
+# https://github.com/verdaccio/verdaccio/tree/master/conf
+#
+
+# 仓库的包默认存储的位置，默认是不存在的，当发布私有包之后会在 /root/.config/verdaccio 中存在
+# path to a directory with all packages
+storage: ./storage
+# path to a directory with plugins to include
+plugins: ./plugins
+
+web:
+  # 网页 title
+  title: Verdaccio
+  # comment out to disable gravatar support
+  # gravatar: false
+  # 包的排序 asc 降序 desc 升序
+  # by default packages are ordercer ascendant (asc|desc)
+  # sort_packages: asc
+  # 是否开启暗黑模式
+  # convert your UI to the dark side
+  # darkMode: true
+  # 网页 logo
+  # logo: http://somedomain/somelogo.png
+  # 网页 favicon
+  # favicon: http://somedomain/favicon.ico | /path/favicon.ico
+  # 网页最大连接数
+  # rateLimit:
+  #   windowMs: 1000
+  #   max: 10000
+
+# translate your registry, api i18n not available yet
+# i18n:
+# 国际化相关，同样404了。
+# list of the available translations https://github.com/verdaccio/ui/tree/master/i18n/translations
+  # 支持 zh_CN
+  #   web: en-US
+
+auth:
+  # 注册用户的信息存放位置
+  htpasswd:
+    file: ./htpasswd
+    # Maximum amount of users allowed to register, defaults to "+inf".
+    # You can set this to -1 to disable registration.
+    # 默认可注册的用户是无限的，如果修改为 -1 则是不允许注册；限定用户方法如下
+    # 1，先注册 n 个用户，然后修改配置文件为 -1，后续不允许注册
+    # 2，开个 n 个用户注册接口
+    # max_users: 1000
+
+# a list of other known repositories we can talk to
+# 如果私有库没有的话，去查找以下库。
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+
+packages:
+  # @*/ 是包的作用域 例如 @vue/cli 那么 @vue 则是这个包的作用域，前缀一般都是某个组织或者说某个公司，证明这是个内部包
+  '@*/*':
+    # scoped packages
+    access: $all
+    publish: $authenticated
+    unpublish: $authenticated
+    # 如果私有库没有的话，去 npm 查找查找库。
+    proxy: npmjs
+  # 普通的 npm 包
+  '**':
+    # 允许所有用户发布和访问包
+    # allow all users (including non-authenticated users) to read and
+    # publish all packages
+    #
+    # 也可以指定指定 @xxx/xxx 类似的作用域
+    # you can specify usernames/groupnames (depending on your auth plugin)
+    # $all 所有人 $anonymous 只有匿名者可以操作（基本没用） $authenticated 认证用户（通过npm adduser 添加的用户。
+    # and three keywords: "$all", "$anonymous", "$authenticated"
+    access: $all
+
+    # allow all known users to publish/publish packages
+    # (anyone can register by default, remember?)
+    publish: $authenticated
+    unpublish: $authenticated
+
+     # if package is not available locally, proxy requests to 'npmjs' registry
+    proxy: npmjs
+
+# You can specify HTTP/1.1 server keep alive timeout in seconds for incoming connections.
+# A value of 0 makes the http server behave similarly to Node.js versions prior to 8.0.0, which did not have a keep-alive timeout.
+# WORKAROUND: Through given configuration you can workaround following issue https://github.com/verdaccio/verdaccio/issues/301. Set to 0 in case 60 is not enough.
+server:
+  keepAliveTimeout: 60
+
+middlewares:
+  audit:
+    enabled: true
+
+# log settings
+logs: { type: stdout, format: pretty, level: http }
+#experiments:
+#  # support for npm token command
+#  token: false
+#  # disable writing body size to logs, read more on ticket 1912
+#  bytesin_off: false
+#  # enable tarball URL redirect for hosting tarball with a different server, the tarball_url_redirect can be a template string
+#  tarball_url_redirect: 'https://mycdn.com/verdaccio/${packageName}/${filename}'
+#  # the tarball_url_redirect can be a function, takes packageName and filename and returns the url, when working with a js configuration file
+#  tarball_url_redirect(packageName, filename) {
+#    const signedUrl = // generate a signed url
+#    return signedUrl;
+#  }
+
+# This affect the web and api (not developed yet)
+#i18n:
+#web: en-US
+
+listen: 0.0.0.0:4873
+```
+
+#### 权限管理
+
+根据上面的配置内容我们举个 🌰。
+
+```bash
+packages:
+ # 可以自定义包名的规则。代表 local- 开头的包，只有登录后才可以进行操作。
+  'local-*':
+    access: $authenticated
+    publish: $authenticated
+    unpublish: $authenticated
+    proxy: npmjs
+  # 表示私有库的所有人都可以发布，访问，撤销包。
+  '**':
+    access: $all
+    publish: $all
+    unpublish: $all
+    proxy: npmjs
+```
+
+### 发布包到私有库
+
+强行插波广告，请大家去文章末尾下载代码，作为测试使用的库 😏。[基于 VueCli 开发组件库](https://juejin.cn/post/7057381682474647560) 。
+
+#### nrm 管理 npm 源
+
+[nrm](https://www.npmjs.com/package/nrm) 可以很简单的切换多个 npm 原地址。npm, cnpm ... ... 下面简单罗列 nrm 中常用的一些指令。
+
+```bash
+npm install -g nrm
+```
+
+| 参数                   | 默认值 | 示例                                 | 描述             |
+| ---------------------- | ------ | ------------------------------------ | ---------------- |
+| `ls`                   |        | `nrm ls`                             | 列出所有的源地址 |
+| `use [source]`         |        | `nrm use cnpm`                       | 切换到指定的源   |
+| `add [resigtry] [url]` |        | `nrm add test http://localhost:8080` | 添加源           |
+| `del [resigtry] `      |        | `nrm del test `                      | 删除源           |
+
+#### package.json
+
+既然使用了 `verdaccio` 那就是托管私有仓库，既然是私有仓库，那就尽可能的规范。众所周知 npm 上面包的一些显示信息都是根据 `package.json` 中的字段名显示的，下面就介绍一些比较关键的内容。
+
+| 键名              | 示例                                     | 描述                                                                                                                                                                                                                                                                                                                                       |
+| ----------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`            | `test-comp`                              | 包的名称，必须。命名规则 `@xx/xx` `xx-xx` `xxx` 尽量使用小写字母                                                                                                                                                                                                                                                                           |
+| `version`         | `0.0.1`                                  | 包的版本，必须。[版本规则](http://www.conardli.top/blog/article/%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%8C%96/%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%8C%96%EF%BC%88%E4%B8%80%EF%BC%89npm%E5%8C%85%E5%A6%82%E4%BD%95%E8%BF%9B%E8%A1%8C%E7%89%88%E6%9C%AC%E7%AE%A1%E7%90%86%EF%BC%9F.html#%E6%9F%A5%E7%9C%8Bnpm%E5%8C%85%E7%89%88%E6%9C%AC) |
+| `description`     | `这是一个组件库`                         | 用于添加模块的的描述信息，方便别人了解你的模块。                                                                                                                                                                                                                                                                                           |
+| `keywords`        | `ui, components, library`                | 用于给你的模块添加关键字。当在 npm 中输入内容进行检索的时候回通过 `description` 和 `keywords` 中的内容进行检索。                                                                                                                                                                                                                           |
+| `main`            | `/index.js`                              | 项目入口                                                                                                                                                                                                                                                                                                                                   |
+| `private`         | `false`                                  | 是否是私有库，如果要发布到 npm 修改为 fasle                                                                                                                                                                                                                                                                                                |
+| `dependencies`    | `{}`                                     | 项目生产环境依赖                                                                                                                                                                                                                                                                                                                           |
+| `devDependencies` | `{}`                                     | 项目开发环境依赖                                                                                                                                                                                                                                                                                                                           |
+| `author`          | `xsq`                                    | 项目作者                                                                                                                                                                                                                                                                                                                                   |
+| `license`         | `MIT`                                    | 开源协议                                                                                                                                                                                                                                                                                                                                   |
+| `scripts`         | `npm run serve`                          | 启脚本配置                                                                                                                                                                                                                                                                                                                                 |
+| `homepage`        | `http:baidu.com`                         | 项目主页                                                                                                                                                                                                                                                                                                                                   |
+| `bugs`            | `{ url: http://github.com/xxx/issues }`  | bug 地址                                                                                                                                                                                                                                                                                                                                   |
+| `repository`      | `{ type: git， url: http://github.com }` | 仓库 地址                                                                                                                                                                                                                                                                                                                                  |
+| `files`           | `[lib, components, styles]`              | 发布到 npm 上面的文件结构，可以尽量使用此配置从而不适用 `.npmignore` 文件。                                                                                                                                                                                                                                                                |
+
+以上内容包含大部分常用属性，如果还有需要可自行进行查阅 [packages.json](http://www.conardli.top/blog/article/%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%8C%96/%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%8C%96%EF%BC%88%E4%BA%8C%EF%BC%89package.json%E7%9F%A5%E5%A4%9A%E5%B0%91%EF%BC%9F.html)
+
+#### 发布包
+
+在了解完上面的前置内容，相比较之下 npm 包的发布还是比较简单的。
+
+
+- 发布包：项目的根目录下 `npm publish` 即可，根据上面私有库的配置，可能会需要登录。
+
+- 登录 npm： `npm login` 然后根据提示一步步的操作。
+
+- 登出 npm：`npm logout`。
+
+- 删除发布的包：`npm unpublish [packageName]` 如果不可以加上参数 `--force` 。**注意：此指令仅适用于 24小时内发布的包**
+
+- 如果不维护此包可以使用 `npm deprecate <pkg>[@<version>] <message>` 此后如果下载此包会包含一些警告信息。

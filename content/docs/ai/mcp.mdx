@@ -1,0 +1,256 @@
+---
+title: "MCP 与相关概念"
+description: MCP、工具调用与 Agent 生态中的核心概念
+---
+
+AI 应用的圈子里面整天说 `Agent、FunctionCalling | ToolCalling、MCP、Herness、ReAct、Loop Engineering、Harness Engineering` 都在说什么？
+
+- `Agent`：智能体，模型本身不具备记忆、工具调用、任务规划的功能，Agent 就是 `循环 → 思考 →  行动 →  观察` 的闭环，最终完成一个复杂的任务；
+
+- `FunctionCalling | ToolCalling`：工具调用，赋予模型调用外部工具以及格式化输出的能力，早期 OpenAI 提出的 `FunctionCalling`， `ToolCalling` 则是演进的产物，这也是 Agent 的一部分，
+
+- `MCP`：是 `Model Context Protocol` 的缩写，模型上下文协议，模型调用工具的一种标准协议，在开始的时候各种模型都有自己的工具调用方案，互不兼容，在代码体现上工具的形式也是自娱自乐；
+  - MCP 分为服务端与客户端，使其变得标准化，任意模型直接连接到这个 MCP 的服务端都可以使用内部的一系列工具。连接者可以被视为客户端；
+  - MCP 其实就是一系列工具的集合组合出来的工具集；
+  - MCP 的服务端可以理解成一个微服务，独立于 Agent 应用，谁想使用就连接即可。
+
+- `ReAct`：是 `Reasoning + Acting` 的缩写，推理 + 行动，ReAct 是一种 Agent 的实现方式，模型在每一步的循环中都会进行推理和行动，推理的结果会影响行动的选择，行动的结果会影响下一步的推理。让模型不再是“盲猜”或“一次性的工具调用”，而是“走一步看一步”的智能决策者。
+
+- `Loop Engineering`：ReAct 定义了 `思考 → 行动 → 观察` 的循环逻辑，但在真实运行中，这个循环会遇到各种工程问题，比如死循环、过早终止等，针对循环内部的逻辑和策略做出的工程设计和优化
+
+- `Harness Engineering`：围绕 Agent 的运行环境展开的一整套系统工程实践，比如沙箱隔离、可观测性、评测与基准、回放与调试，让 Agent 更稳更安全的运行。
+
+
+## MCP
+
+在 LangChain 中通过 `MultiServerMCPClient` 作为客户端连接对象，依赖 `langchain-mcp-adapters` [文档](https://docs.langchain.com/oss/python/langchain/mcp)
+
+服务端则推荐通过 `fastmcp` 进行开发，它本身同样支持 `client` [文档](https://gofastmcp.com/servers/server)
+
+```py
+# server.py
+
+from fastmcp import FastMCP
+
+mcp = FastMCP(
+  name="Math", # 名字
+  instructions="数学计算", # 描述
+  version="1.0.0" # 版本
+)
+
+@mcp.tool
+def add(a: int, b: int) -> int:
+  """两数相加"""
+  return a + b
+
+@mcp.tool(name="sub_tool", description="两数相减")
+def sub(a: int, b: int) -> int:
+  return a - b
+
+if __name__ == "__main__":
+  mcp.run(transport="http", host="127.0.0.1", port=9000)
+
+# [08/20/26 12:51:59] INFO     Starting MCP server 'Math' with transport 'http' on http://127.0.0.1:9000/mcp                                     
+# INFO:     Started server process [9906]
+# INFO:     Waiting for application startup.
+# INFO:     Application startup complete.
+```
+
+`@mcp.tool` 和 `langchain` 的工具使用大致差不多；支持 `DocString` 或者类型注解加参数的组合。
+
+`mcp.run` 中的 `transport` 支持多种模式，除默认值外可以指定运行的地址和端口参数 [文档](https://gofastmcp.com/deployment/running-server)
+
+- `http | streamable-http` 用于使用 Streamable HTTP 协议的 Web 服务
+- `stdio` 默认值，用于本地集成和 CLI 工具
+- `sse` 传统 Web 传输（已弃用）
+
+
+```py
+# client.py
+
+from langchain.chat_models import init_chat_model
+from langchain.agents import create_agent
+from langchain.messages import HumanMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
+import asyncio
+from dotenv import load_dotenv
+
+load_dotenv() # 加载环境变量
+
+async def main():
+  # 连接本地的 mcp 服务端
+  client = MultiServerMCPClient({
+    # mcp 名称
+    "Math": {
+      # transport 和服务端保持一致
+      "transport": "streamable_http",
+      # 服务端的地址
+      "url": "http://127.0.0.1:9000/mcp",
+    }
+  })
+
+  # 获取 mcp 中的所有工具
+  tools = await client.get_tools()
+
+  model = init_chat_model("deepseek:deepseek-v4-flash")
+  agent = create_agent(model, tools=tools) # 将工具绑定到 agent
+  result = await agent.ainvoke({"messages": [HumanMessage("1 + 2 等于多少？")]})
+
+  for message in result["messages"]:
+    print(message.pretty_print())
+
+asyncio.run(main())
+```
+
+## 客户端连接
+
+通过代码连接的方案，可以看到实际上就是一个对象里面套着一个个的 mcp 服务，每个服务由自己对应的 key 和 value。
+
+现在各种编辑器、包括 `cursor | codex | claude code` 等都支持接入 mcp
+
+标准协议的全貌实际上是，比如 [百度地图 mcp](https://mcp.so/zh/servers/mcp-baidu-maps) 中 env 就是请求地图 api key
+
+```py
+{
+  "mcpServers": {
+    # 对于已经发布的包 mcp 使用方案
+    "mcp-name-1": {
+      "command": "uvx | npx",
+      "args": ["arg1", "arg2"...],
+      "env": {  # 可选
+        "key": "value"
+      }
+    },
+    # 对于已经在线服务提供的 mcp 使用方案
+    "mcp-name-2": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp",
+      # 对于服务还会有 headers 字段，鉴权、特殊请求头等
+      "headers": {
+        "key": "value"
+      }
+    }
+  }
+}
+```
+
+值得一提的是 `uvx | npx` 用来远程执行代码的指令；
+
+- npx 会先查找本地 `$PATH` 或项目内 `node_modules/.bin` 有没有对应的可执行内容，没有的话就远程临时安装执行，不会污染本地环境
+- uvx 安装过直接使用，没安装过，就会在一个临时、隔离的虚拟环境中安装工具，并缓存起来以便下次快速调用
+
+## Auth0 鉴权
+
+通过第三方的方式鉴权，[Auth0](https://auth0.com/) 先去注册一个账号，在 Application 中创建一个 API。
+
+在 `APIs` 和 `Applications` 中拿到关键的信息
+
+```py
+# Server.py
+
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+verifier = JWTVerifier(
+    # auth.yourcompany.com   Applications -> 指定应用 -> Domain
+    # .well-known/jwks.json 固定拼接
+    jwks_uri="https://auth.yourcompany.com/.well-known/jwks.json",
+    # domain 的地址
+    issuer="https://auth.yourcompany.com",
+    # APIs 创建时输入的 Identifier
+    audience="mcp-production-api"
+)
+
+mcp = FastMCP(name="Protected API", auth=verifier)
+```
+
+```py
+# Client.py
+
+client = MultiServerMCPClient({
+    "Math": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:9000/mcp",
+      "headers": {
+        "Authorization": "Bearer {token}"
+      }
+    }
+  })
+
+# 通过 APIs test tab 页面提供的 curl 获取 token
+# curl --request POST \
+#   --url https://dev-xsq.us.auth0.com/oauth/token \
+#   --header 'content-type: application/json' \
+#   --data '{
+#     "client_id":"{client_id}",
+#     "client_secret":"{client_secret}",
+#     "audience":"only-flag",
+#     "grant_type":"client_credentials"
+#   }'
+```
+
+## 系统结合
+
+实际场景中，有些场景：比如将现有业务改造为 MCP 强结合，那么实际上这个 MCP 服务的鉴权和角色往往与老系统保持一致。
+
+这种场景下，直接通过 MCP 透传，然后通过中间件鉴权的方案，显然更合理，可能还有更好的方案，不过我不知道...
+
+**在 fastmcp 中中间件的执行顺序保持先进后出的顺序**
+
+```py
+# Server.py
+
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.exceptions import AuthorizationError, ToolError
+
+# 模拟用户权限
+PERMISSIONS = {
+  "add": ["admin", "plain"],
+  "sub": ["admin"]
+}
+
+mcp = FastMCP(name="Math")
+
+class AuthMiddleware(Middleware):
+  async def on_request(self, context: MiddlewareContext, call_next):
+    # 获取 headers 中所有内容
+    headers = get_http_headers(include_all=True)
+    if not headers or "authorization" not in headers:
+      # 直接这样会导致客户端程序错误，在 on_call_tool 可以直接校验但是
+      # 放行到 on_call_tool 觉得又不合理
+      raise AuthorizationError(401, "鉴权错误")
+
+    # 设置上下文信息
+    context.fastmcp_context.set_state("role", headers.get('authorization'))
+    return await call_next(context)
+
+  async def on_call_tool(self, context: MiddlewareContext, call_next):
+    role = await context.fastmcp_context.get_state("role")
+    tool_name = context.message.name
+
+    if role not in PERMISSIONS[tool_name]:
+      raise ToolError(403, f"该角色 {role} 没有 {tool_name} 权限")   
+
+    return await call_next(context)
+
+# 添加中间件
+mcp.add_middleware(AuthMiddleware())
+```
+
+```py
+# Client.py
+
+client = MultiServerMCPClient({
+  "Math": {
+    "transport": "streamable_http",
+    "url": "http://127.0.0.1:9000/mcp",
+    "headers": {
+      # plain-token
+      "Auhtorization": "Bearer admin-token"
+    }
+  }
+})
+```

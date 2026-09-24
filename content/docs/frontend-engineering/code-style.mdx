@@ -1,0 +1,385 @@
+---
+title: '前端代码提交及代码风格规范'
+description: 'ESLint、Prettier、Husky 与 commitlint 的工程化接入'
+---
+
+## 代码检测以及规范
+
+> 示例项目使用 Vue3 + TS + Vite，刚好该脚手架创建出来的项目没有 `eslint` `prettier` 的配置。可以重零搭建。其他前端项目也可以此作为参考。
+
+### ESLint 检测代码
+
+1, 安装 eslint `npm install eslint -D`。
+
+2, 生成 eslint 默认配置 `./node_modules/.bin/eslint --init`
+
+- 执行后有三个选项，默认为第二个，默认即可。
+
+```
+How would you like to use ESLint?
+  To check syntax only  只检查语法
+❯ To check syntax and find problems 检查语法并查找问题
+  To check syntax, find problems, and enforce code style 检查语法、发现问题并强制执行代码样式
+```
+
+- 选择哪种模块规范，示例项目为 ES 模块所以选择第一个。
+
+```
+What type of modules does your project use?
+❯ JavaScript modules (import/export)
+  CommonJS (require/exports)
+  None of these
+```
+
+- 选择哪种框架
+
+```
+Which framework does your project use?
+  React
+❯ Vue.js
+  None of these
+```
+
+- 是否使用 `Typescript`
+
+```
+Does your project use TypeScript? › No / Yes
+```
+
+- 在哪个环境运行项目，脚手架项目毫无疑问是 `Node`
+
+```
+Where does your code run? …  (Press <space> to select, <a> to toggle all, <i> to invert selection)
+✔ Browser
+✔ Node
+```
+
+- 选择配置文件的格式。
+
+```
+What format do you want your config file to be in? …
+❯ JavaScript
+  YAML
+  JSON
+```
+
+- 是不是要现在下载这些依赖。`eslint-plugin-vue@latest` `@typescript-eslint/eslint-plugin@latest` `@typescript-eslint/parser@latest`。
+
+```
+eslint-plugin-vue@latest @typescript-eslint/eslint-plugin@latest @typescript-eslint/parser@latest
+? Would you like to install them now? › No / Yes
+```
+
+- 选择用哪种包管理工具
+
+```
+? Which package manager do you want to use? …
+❯ npm
+  yarn
+  pnpm
+```
+
+![eslint --init 的交互式选项](/frontend-engineering/code-style/eslint-init.jpg)
+
+完成之后项目根目录会生成 `.eslintrc.js` 。
+
+<details>
+<summary>点击查看 .eslintrc.js 完整内容</summary>
+
+```javascript
+module.exports = {
+  env: {
+    browser: true,
+    es2021: true,
+    node: true, // 新增的文件可能不包含这个键值，会引起 commonjs 规范的代码报错。可以新增此项解决该问题。
+  },
+  extends: ['eslint:recommended', 'plugin:vue/essential', 'plugin:@typescript-eslint/recommended'],
+  parserOptions: {
+    ecmaVersion: 'latest',
+    parser: '@typescript-eslint/parser',
+    sourceType: 'module',
+  },
+  plugins: ['vue', '@typescript-eslint'],
+  rules: {},
+};
+```
+
+</details>
+
+当然也可以配置 `.eslintignore` 文件来配置不想要规则的文件。内容类似于 `.gitignore`。
+
+3, 在 `package.json` 中新增一条命令 并且执行。 `"lint:eslint": "eslint \"src/**/*.{vue,ts,tsx}\" --fix"`。
+
+如果在执行的时候遇到以下错误。是由于 `Node` 版本问题导致的。可以将版本提升到 `v16.x.x`
+
+```
+Oops! Something went wrong! :(
+ESLint: 8.16.0
+TypeError: Module.createRequire is not a function
+```
+
+4, 此时执行 `npm run lint:eslint` 发现会出现以下错误。原因是 `eslint` 并不能识别 `vue` 中的模板内容。
+
+![eslint 无法解析 Vue 模板而报错](/frontend-engineering/code-style/eslint-vue-template-error.jpg)
+
+5，可以通过 `vue-eslint-parser` 插件来解决上述问题。`npm install vue-eslint-parser -D`。 随后在 `.eslintrc.js` 中新增以下内容。[点击查看 `vue-eslint-parser` 文档](https://github.com/vuejs/vue-eslint-parser)
+
+```javascript
+module.exports = {
+  extends: {
+    // ....
+  },
+  parser: 'vue-eslint-parser', // 新增 parser 键值。
+  parserOptions: {
+    // ....
+  },
+};
+```
+
+6，再次执行 `npm run lint:eslint` 命令发现又出现下面的错误。原因是 `Vue3` 创建出的模板项目在 `<template>` 中都没有了根节点导致的。可以通过在 `.eslintrc.js` 中新增一条 `rule` 解决此问题。 `"vue/no-multiple-template-root": "off"`。 [stackOverflow](https://stackoverflow.com/questions/64867504/vue-3-the-template-root-requires-exactly-one-element-eslint-plugin-vue)
+
+![Vue3 多根节点触发的 eslint 报错](/frontend-engineering/code-style/eslint-multiple-root-error.jpg)
+
+通过上面的一通操作，基于 `Vue` 项目的代码检测已经解决了。但问题是每次只有运行 `npm run lint:eslint` 命令的时候才知道哪里出了问题。
+
+推荐使用 `vscode` 的小伙伴安装 `eslint` 插件。拥有此插件后 `vscode` 就可以帮助我们动态的检测代码。比如下面场景。
+
+没有安装插件前，声明了一个 `A` 变量虽然没有引用，但是也不会有问题。
+
+![未安装插件时未使用的变量没有提示](/frontend-engineering/code-style/vscode-eslint-off.jpg)
+
+安装插件后，会获得警告，把鼠标放到上面还会提示问题所在。
+
+![安装插件后编辑器给出警告](/frontend-engineering/code-style/vscode-eslint-warning.jpg)
+
+7，此时再借助插件 `vite-plugin-eslint` 将错误信息同时在浏览器中也进行显示。`npm install vite-plugin-eslint`；
+
+```ts
+import { defineConfig } from 'vite';
+import eslint from 'vite-plugin-eslint';
+
+export default defineConfig({
+  plugins: [eslint()]
+});
+```
+
+![浏览器中叠加显示的 eslint 错误](/frontend-engineering/code-style/vite-eslint-overlay.png)
+
+### Prettier 美化代码
+
+相信不少小伙伴都是自己在 `vscode` 中配置 `eslint` + `prettier` 自动格式化代码，表面看来效果不错。但是不要忘记我们做的是项目，不可能要求每个团队的成员的 IDE 去和你的 IDE 相同配置吧。下面就看下如何在项目中使用 `prettier`
+
+1，安装插件 `npm install prettier -D`，随后在项目根目录新增 `.prettierrc.js` 内容如下。[点击查看更多配置](https://prettier.io/docs/en/options.html)
+
+```javascript
+module.exports = {
+  printWidth: 120, //单行长度
+  tabWidth: 2, //缩进长度
+  useTabs: false, //使用空格代替tab缩进
+  semi: true, //句末使用分号
+  singleQuote: true, //使用单引号
+};
+```
+
+当然也可以配置 `.prettierignore` 来新增不想格式化的文件。规则类似于 `.gitignore`。
+
+2，在 `package.json` 中增加命令。`"lint:prettier": "prettier --write --loglevel warn \"src/**/*.{js,json,tsx,css,less,scss,vue,html,md}\""`，此时每次运行该指令在 src 下的文件中的内容都会执行该规范格式化代码。
+
+3，此时则可以通过 `vscode` 中的 `prettier` 插件来实现保存代码自动格式化。安装完成后在 `setting.json` 中增加以下内容。
+
+```json
+{
+  "editor.formatOnSave": true, // 开启自动保存
+  "editor.defaultFormatter": "esbenp.prettier-vscode" // 默认格式化工具选择prettier
+}
+```
+
+**注意** 不管你之前有没有在 `vscode` 中配置过 `prettier` 他自动 `format` 的规则是优先项目中的配置，项目中没有配置才会采用自己配置的方式进行 `format`
+
+4，让 `ESlint` 也用 `prettier` 的规则来检测代码是否合法。下载 `eslint-plugin-prettier` `eslint-config-prettier`，并做出以下配置。[点击查看 `eslint-config-prettier` 文档](https://github.com/prettier/eslint-config-prettier)、[点击查看 `eslint-plugin-prettier` 文档](https://github.com/prettier/eslint-plugin-prettier)
+
+```javascript
+// .eslintrc.js
+module.exports = {
+  "extends": {
+    // ...
+    "prettier",
+    "plugin:prettier/recommended"
+  }
+}
+```
+
+当配置完之后发现好多地方都报错了，不要慌张，这是我们的规则生效了，此时可以执行之前配置的 `lint:prettier` 指令，或者保存让它自己格式化。
+
+### Husky
+
+这是一个 git hook 的工具，可以通过在 git 操作期间的一些钩子，做一些额外的操作，比如执行 lint test 等。[点击查看所有 git hooks](https://git-scm.com/docs/githooks) [点击查看 `husky` 文档](https://typicode.github.io/husky/#/?id=articles)
+
+一般情况可能用到以下钩子：
+
+- `pre-commit`：代码提交之前触发，可以通过此钩子判断代码是否符合规范。
+
+- `commit-msg`：对 commit 的信息校验，可以通过此钩子判定 commit 是否合法。
+
+- `pre-push`： 代码提交之前触发，可以通过此钩子对业务代码执行一些测试。
+
+> 经过上述操作后，从代码编辑阶段解决了代码格式化的问题。但是总有一些小伙伴写出不符合规则的代码，并且提交到 git 仓库。
+>
+> 这个时候可以通过 git hook 来拦截提交的代码并执行之前配置的格式化代码相关命令，让提交的代码都是符合规范的。
+
+1，安装 `npm install husky -D` 随后执行 `npm set-script prepare "husky install"` 然后再 `package.json` 中会新增一条命令并执行这条命令。此时项目根目录会新增 `.husky` 文件夹。
+
+```json
+"scripts": {
+  "prepare": "husky install"
+}
+```
+
+这样当团队中的其他伙伴 `clone` 项目并下载依赖时，则会自动执行该命令并启用 git 钩子，在项目的根目录新增 `.husky` 文件夹。而不需要再执行 `npm run prepare`。
+
+2，创建 `pre-commit` 钩子，让代码在提交的时候执行前面配置的 `lint:prettier` 指令。
+
+```bash
+npx husky add .husky/pre-commit "npm run lint:prettier"
+git add .husky/pre-commit # 项目开始 install 的时候并不会新增这个钩子，需要提交到暂存区后续提交给所有的团队成员使用。
+```
+
+![husky 生成的 pre-commit 钩子](/frontend-engineering/code-style/husky-pre-commit.jpg)
+
+此时 `pre-commit` 内容为。 如果再次执行 `git commit` 时则会运行以下指令。当然也可以有多个指令， 比如把 `lint:eslint` 也可以加进去。
+
+```bash
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+npm run lint:prettier
+```
+
+### Lint-staged
+
+通过上面 `Husky` 工具，成功的在代码提交到仓库之前对代码做了美化，但是这种代码的**美化**是全局的，不完美，也不安全。试想你的同事提交了没有格式化的代码，你提交的时候全局把代码做了格式化，如果出了问题怎么排查？
+
+这个时候就要 `lint-staged` 登场了，他能确保我们每次提交时执行的 `lint:prettier` 或者 `lint:eslint` 的代码都是暂存区的代码。及时因为美化代码导致的格式变了最终产生问题，也是我们这次提交的文件出现了问题。大大的减少了排查问题的范围。[点击查看 lint-staged 文档](https://github.com/okonet/lint-staged)
+
+1，安装 `npm install lint-staged -D`
+
+2，将 `pre-commit` 文件中的命令修改为 `npx lint-staged`
+
+3，在 `package.json` 中新增以下内容。
+
+```json
+"lint-staged": {
+  "*.{js,vue,ts,jsx,tsx}": [
+    "prettier --write",
+    "eslint --fix"
+  ],
+  "*.{md,html,css,less,scss}": "prettier --write"
+}
+```
+
+## 代码提交规范
+
+再开始规范之前先看一些比较出名的开源项目是怎么规范提交内容的。
+
+![开源项目的提交记录前缀](/frontend-engineering/code-style/commit-history.jpg)
+
+可以看出每次的提交都会有对应的前缀，手写也可以，就是麻烦。当然可以通过 `commitizen` 来帮助我们提交信息。
+
+### commitizen 提交规范的 commit 信息
+
+1，安装 `npm install commitizen cz-conventional-changelog -D`。 [点击查看 commitizen 文档](https://github.com/commitizen/cz-cli)
+
+2，在 `package.json` 中新增命令，以后不必要在执行 `git commit` 命令，直接执行 `npm run commit` 即可。
+
+```json
+{
+  "scripts": {
+    "commit": "cz"
+  }
+}
+```
+
+3，执行 `npx commitizen init cz-conventional-changelog --save-dev --save-exact`。该命令做了两件事情。
+
+- 将 `config.commitizen` 密钥添加到 `package.json` 中。
+
+```json
+"config": {
+  "commitizen": {
+    "path": "./node_modules/cz-conventional-changelog"
+  }
+}
+```
+
+- 创建可交互的 commit 提交窗口。
+  
+![commitizen 的交互式提交窗口](/frontend-engineering/code-style/commitizen-prompt.jpg)
+
+
+<details>
+<summary>点击查看 commit 选项具体含义</summary>
+
+- `feat`：一个新功能。
+
+- `fix`：解决 bug。
+
+- `docs`：只是文档的更新。
+
+- `style`：不影响代码含义的变更。
+
+- `refactor`：重构代码
+
+- `perf`：性能优化
+
+- `test`：添加缺失的测试或者更正现有的测试代码
+
+- `build`： 打包相关配置的修改
+
+- `ci`： 持续继承相关的配置
+
+- `chore`：其他没有修改 src 或者 测试文件的修改。
+
+</details>
+
+4，提交过程示例
+
+![使用 commitizen 提交的示例](/frontend-engineering/code-style/commitizen-example.jpg)
+
+### commitlint 强制规范信息
+
+经过上面的测试，现在已经能够提交规范的信息，但是也做出了一点牺牲。就是不在执行 `git commit` 了，这会导致一些新来的小伙伴没有注意到项目中配置了专有的提交命令，仍然使用了 `git commit`，这使得之前做的提交规范功亏一篑。
+
+此时则可以使用 `commitlint` 来强制规范用户提交信息，只要不符合规范就不让他提交。[点击`commitlint` 文档](https://commitlint.js.org/#/guides-local-setup)
+
+1，安装 `commitlint` 和 需要的规范配置。
+
+```bash
+npm install --save-dev @commitlint/{cli,config-conventional}
+# windows 用户可能要执行下面的指令。
+npm install --save-dev @commitlint/config-conventional @commitlint/cli
+```
+
+2，创建配置文件。或者可以是 `.commitlintrc.js`、`.commitlintrc`、`commitlint.yml`、`commitlint.json`或者在 `package.json` 中新增 `commitlint` 键值对。
+
+```bash
+echo "module.exports = { extends: ['@commitlint/config-conventional'] };" > commitlint.config.js
+```
+
+3，`.husky` 工作目录中新增钩子 `commit-msg` 或者可以执行 `npx husky add .husky/commit-msg "npx --no -- commitlint --edit '\${1}'"`，但我个人在执行的有点问题，最后的 `${1}` 无法生成。不过无伤大雅，补上就可以了。**记得提交到仓库和小伙伴共享此文件**
+
+```bash
+#!/bin/sh
+. "\$(dirname "\$0")/_/husky.sh"
+
+npx --no -- commitlint --edit "\${1}"
+
+# 最近又遇到一个问题，在这里记录一下。上面的 $1 不知道为啥用两天就执行不成功了，按照下面的方式就可以了。
+npx --no -- commitlint --edit $1
+
+```
+
+此时 `commit` 就不能随便输入内容了。必须按照规范进行。
+
+![commitlint 拦截不合规的提交信息](/frontend-engineering/code-style/commitlint-reject.jpg)
+
+4，测试成果这里就不再演示了，删除本地项目，通过 `git clone` 项目，然后下载依赖，提交代码测试规范是否可用。
