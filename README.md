@@ -1,52 +1,75 @@
 # 栈记
 
-基于 Next.js 与 Fumadocs 构建的全栈开发知识库。内容涵盖前端、后端、数据库、Linux、Docker、工程实践与面试复习。
+全栈开发知识库,收录前端(Vue、React、前端工程化)、服务端与数据(Nest、Python、MySQL)、运维与 AI(Docker、Linux、LangChain、LangGraph)以及常用工具笔记。
+
+站点基于 [Fumadocs](https://fumadocs.dev) 二次开发,在它的文档框架、MDX 加载与搜索之上替换了整套视觉与首页逻辑,并配置为**纯静态导出**,构建产物可直接交给任意静态托管。
+
+## 技术栈
+
+- **Fumadocs**:`fumadocs-core`(内容加载与搜索)、`fumadocs-mdx`(MDX 编译)、`fumadocs-ui`(文档外壳)。注意 `package.json` 里 `fumadocs-ui` 指向的是 `@fumadocs/base-ui` 这个发布包。
+- **Next.js 16**(App Router,`output: 'export'` 静态导出)+ React 19
+- **Tailwind CSS 4**(PostCSS 插件形式引入)
+- 内容为 MDX,代码高亮由 Fumadocs 内置的 Shiki 处理;`motion` 负责动效,`lucide-react` 提供图标。
+
+运行环境要求 Node.js ≥ 22、npm ≥ 10(见 `package.json` 的 `engines`)。
 
 ## 本地开发
 
 ```bash
-npm run dev     # http://localhost:3000/docs
+npm install
+npm run dev     # http://localhost:3000,文档入口在 /docs
+```
+
+其它命令:
+
+```bash
+npm run types:check   # Next 类型生成 + tsc 检查
+npm run build         # 静态产物输出到 out/
+npm start             # 本地起静态服务器预览 out/
 ```
 
 ## 构建与部署
 
-```bash
-npm run build   # 静态产物输出到 out/
-npm start       # 本地预览 out/
+`next.config.mjs` 里开了 `output: 'export'`,同时关闭了图片优化(静态导出没有图片优化服务),所以产物是纯静态文件,不需要 Node 服务,把 `out/` 交给 Vercel、Netlify、Cloudflare Pages、GitHub Pages 等任意静态托管即可。
+
+部署时两点注意:
+
+- `NEXT_PUBLIC_SITE_URL` 在构建时读取,用于生成 canonical 与 OG 图的绝对地址,正式环境记得设置。
+- 搜索索引是构建产物里的 `out/api/search` 这个文件(不是目录),约 5MB,请开启 gzip/brotli 压缩(压完约 1MB)。
+
+## 项目结构
+
+```
+content/docs/          站点内容
+  index.mdx            首页文档
+  meta.json            顶层导航分组（前端 / 服务端与数据 / 运维与 AI / 工具）
+  <分类>/              各分类目录，逐级带自己的 meta.json
+
+app/                   Next.js App Router
+  layout.tsx           全站根布局、元数据，挂载 Fumadocs 的 RootProvider
+  global.css           全局样式（Tailwind 入口 + 主题令牌）
+  (home)/page.tsx      首页，从内容树生成分类与二级入口
+  docs/[[...slug]]/    文档页面
+  api/search/route.ts  构建时导出搜索索引 JSON，浏览器下载后本地搜索
+  og/docs/[...slug]/   每页动态生成 OG 图
+  llms.txt/, llms.mdx/ 面向 LLM 的纯文本索引与逐页 Markdown
+
+components/            站点组件
+  mdx.tsx              MDX 组件映射（覆盖 Card、img 等默认组件）
+  home-page.tsx        首页
+  sheet.tsx            通用构件（细线、进场位移、分区标题）
+  line-card.tsx        正文里的卡片
+  chrome/              首屏、页面切换、搜索弹窗
+
+lib/                   配置与工具
+  source.ts            Fumadocs 内容加载器、页面树、llms 输出
+  shared.ts            站点名与内容路由常量
+  layout.shared.tsx    文档站顶部导航
+  cn.ts / ui.ts / motion.ts   类名合并、共享 class 串、动效参数
+
+public/                静态图片资源（按分类分目录）
+source.config.ts       fumadocs-mdx 配置（代码高亮主题、图片处理）
+next.config.mjs        静态导出配置
 ```
 
-`next.config.mjs` 里开了 `output: 'export'`，构建产物是纯静态文件，不需要 Node 服务，直接把 `out/` 交给任意静态托管即可（Vercel、Netlify、Cloudflare Pages、GitHub Pages 都行）。
-
-部署时注意：`NEXT_PUBLIC_SITE_URL` 在构建时读取，用于生成 canonical 与 OG 的绝对地址；搜索索引 `out/api/search` 有 5.7MB，请开启 gzip/brotli（压完约 1MB）。
-
-## 内容维护
-
-- `content/docs`: 所有笔记页面与 `meta.json` 导航配置。
-- `lib/layout.shared.tsx`: 文档站顶部导航配置。
-- `lib/shared.ts`: 站点名称和内容路由配置。
-- `app/layout.tsx`: 全站元数据；部署时可通过 `NEXT_PUBLIC_SITE_URL` 设置正式域名。
-
-## 设计系统
-
-整站的视觉语言是**一张制图纸**:表面是平的,直角,任意两处之间的分隔都是一条 1px 细线。页面上唯一有饱和度的颜色是强调色,只用在标记、当前项和"正在绘制的线"上。
-
-### 动效
-
-两个文件描述同一套动效,改一处要同时改另一处:
-
-- `lib/motion.ts`: 缓动与时长(`EASE` / `EASE_IN` / `EASE_DRAW`、`DUR`、`STAGGER`),供 React 组件使用。
-- `app/global.css`: 同一组曲线以 `--ease-*` 暴露给 CSS,并覆盖 Fumadocs 自带的 `--animate-fd-*`。
-
-原则:只有位移和线条生长,**没有缩放、没有回弹**。首屏幕布(`components/chrome/intro.tsx`)在 HTML 里就渲染好、由 `html[data-intro]` 决定是否播放,所以不会闪;页面切换(`components/chrome/page-enter.tsx`)由调用方传入的 `key` 触发重挂载,不拦截导航,链接行为与浏览器原生一致。
-
-### 结构
-
-- `components/sheet.tsx`: 全站共用的三个构件——`Rule`(自绘细线)、`Reveal`(进入视口时位移)、`Band`(带标尺的分区标题)。
-- `components/home-page.tsx`: 首页。`Hero` 右侧是站点的堆栈标志,由刻线动画画出,独立存在、不含计数与说明;`技术目录` 是网格化的条目区,悬挂时行整体做一次平移动画。
-- `components/line-card.tsx`: 正文里的 `Cards` / `Card`。它们是同一张表格的单元格,只画自己和相邻单元格共用的那条线,所以奇数个卡片不会留下灰色空档。
-- `app/global.css`: 分八节——令牌、首屏幕布、首页、文档外壳、导航、正文、浮层、浏览器表面。所有 Fumadocs 选择器都写在这里,改样式优先改这个文件而不是去覆盖组件。
-
-### 内容约定
-
-- 代码块用 ```` ```lang tab="文件名" ```` 可以生成带文件头的标签页,样式已适配。
-- `meta.json` 里的 `icon` 会渲染成侧边栏图标;`description` 用在侧边栏顶部的分类切换弹窗里。
+新增笔记只需在 `content/docs/<分类>/` 下添加 `.mdx` 文件,并在同级 `meta.json` 的 `pages` 里登记即可,导航与首页会自动读取内容树更新。
