@@ -604,7 +604,7 @@ print(graph.invoke({"status": "待下单", "mount": 0}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![01.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/9d556f2b8cb64c408483efb7fe586e14~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=1hjAf5tYIFGDt3LpPFJ70ip%2FBEY%3D)
+![01.png](/ai/langgraph/core-concepts-01.webp)
 
 ### 动态并行分支 Send
 
@@ -656,7 +656,7 @@ print(graph.get_graph().draw_mermaid())
 
 虽然 `translate_node` 被执行了 n 遍，但是被合并成了同一个节点
 
-![03.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/1f01848c3c524a27b74d95d4cbf6399f~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=hBCTRqlQYf%2F8M9VuV%2Fj8bkx6wmQ%3D)
+![03.png](/ai/langgraph/core-concepts-03.webp)
 
 ### 动态条件分支 Command
 
@@ -713,7 +713,7 @@ print(graph.invoke({"action": "喜相逢"}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![02.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/2f07f266a9bd4039897be4040cc343e8~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=C36kg1BPti0YiT60h2eSF2USew8%3D)
+![02.png](/ai/langgraph/core-concepts-02.webp)
 
 ### 节点执行顺序与执行单元
 
@@ -772,7 +772,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![04.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/5c8ce40a54834c8daee75b818e380998~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=igHBwwNN0OtjPXF2e%2BxZ1lfTCH0%3D)
+![04.png](/ai/langgraph/core-concepts-04.webp)
 
 标准的线性结构，每个 `Node` 都是一个单独的执行单元
 
@@ -792,7 +792,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![05.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/c8fc1d1a624c4a64bd4b5f5490f2eb0f~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=WutFGilCPOPivrTAW4k1kLmlUwM%3D)
+![05.png](/ai/langgraph/core-concepts-05.webp)
 
 并行结构且带有共同的结束非 `END` 结束节点，则会导致这个非 `END` 结束节点运行多次
 
@@ -817,7 +817,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![06.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/7e9ddb2c8fc447edbc5080d5247cd0de~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=21W8Nx6MlNQDGcEPnU95JwJUtVA%3D)
+![06.png](/ai/langgraph/core-concepts-06.webp)
 
 并行结构的节点多次运行可以通过给 `add_edge` 的第一个参数传入列表解决且最终的图结构也不会被改变
 
@@ -901,7 +901,7 @@ print(graph.invoke({"messages": [HumanMessage("你好")]}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![08.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/dfde82f79c034ffc9eb4a4a873285649~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=hCxU9dJ2jUFQ59VLlBF0vk4ODBU%3D)
+![08.png](/ai/langgraph/core-concepts-08.webp)
 
 ### Command 循环结构
 
@@ -999,4 +999,4 @@ print(graph.get_graph().draw_mermaid())
 # For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
 ```
 
-![09.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/53cb16cc5c044a3583a05e85cbb71211~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736785&x-orig-sign=HyR8nJaXzZFVNnCMykWw8DLq%2BI0%3D)
+![09.png](/ai/langgraph/core-concepts-09.webp)
