@@ -191,7 +191,7 @@ rprint(result.pretty_print())
 
 **模型本身不能直接调用工具，所以仅返回了工具信息告知下一步需要怎么做**
 
-![image.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/bb160b211e7d4ebebfb22a19e9482db5~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736534&x-orig-sign=1n%2FyP0xWObPH5%2FoIxGlnrwgPso8%3D)
+![工具调用时序：模型、Agent 与工具](/ai/langchain/tool-calling-sequence.png)
 
 *   模型将信息和工具组装好丢给模型；
 *   模型决定调用哪个工具丢给 agent；

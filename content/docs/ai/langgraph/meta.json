@@ -4,6 +4,7 @@
   "icon": "Workflow",
   "pages": [
     "core-concepts",
-    "fault-tolerance-and-streaming"
+    "fault-tolerance-and-streaming",
+    "interrupt-subgraph"
   ]
 }

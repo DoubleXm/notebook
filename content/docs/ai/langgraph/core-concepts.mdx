@@ -604,7 +604,7 @@ print(graph.invoke({"status": "待下单", "mount": 0}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![01.png](/ai/langgraph/core-concepts-01.webp)
+![defer 延迟执行节点图](/ai/langgraph/defer-node-graph.png)
 
 ### 动态并行分支 Send
 
@@ -656,7 +656,7 @@ print(graph.get_graph().draw_mermaid())
 
 虽然 `translate_node` 被执行了 n 遍，但是被合并成了同一个节点
 
-![03.png](/ai/langgraph/core-concepts-03.webp)
+![Send 动态并行分支合并为同一节点](/ai/langgraph/send-merged-node-graph.png)
 
 ### 动态条件分支 Command
 
@@ -713,7 +713,7 @@ print(graph.invoke({"action": "喜相逢"}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![02.png](/ai/langgraph/core-concepts-02.webp)
+![Command 动态条件分支示例](/ai/langgraph/command-conditional-graph.png)
 
 ### 节点执行顺序与执行单元
 
@@ -772,7 +772,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![04.png](/ai/langgraph/core-concepts-04.webp)
+![并行执行结构，同一执行单元中的多个节点](/ai/langgraph/parallel-execution-graph.png)
 
 标准的线性结构，每个 `Node` 都是一个单独的执行单元
 
@@ -792,7 +792,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![05.png](/ai/langgraph/core-concepts-05.webp)
+![标准线性结构，每个节点是单独的执行单元](/ai/langgraph/linear-execution-graph.png)
 
 并行结构且带有共同的结束非 `END` 结束节点，则会导致这个非 `END` 结束节点运行多次
 
@@ -817,7 +817,7 @@ graph.invoke({})  # 触发日志
 print(graph.get_graph().draw_mermaid())
 ```
 
-![06.png](/ai/langgraph/core-concepts-06.webp)
+![并行分支汇合到同一个节点](/ai/langgraph/parallel-merge-graph.png)
 
 并行结构的节点多次运行可以通过给 `add_edge` 的第一个参数传入列表解决且最终的图结构也不会被改变
 
@@ -901,7 +901,7 @@ print(graph.invoke({"messages": [HumanMessage("你好")]}))
 print(graph.get_graph().draw_mermaid())
 ```
 
-![08.png](/ai/langgraph/core-concepts-08.webp)
+![add_conditional_edges 循环结构](/ai/langgraph/conditional-loop-graph.png)
 
 ### Command 循环结构
 
@@ -999,4 +999,4 @@ print(graph.get_graph().draw_mermaid())
 # For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
 ```
 
-![09.png](/ai/langgraph/core-concepts-09.webp)
+![循环限制触发的自环结构](/ai/langgraph/recursion-limit-graph.png)

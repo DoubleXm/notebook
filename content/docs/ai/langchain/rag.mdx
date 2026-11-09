@@ -13,7 +13,7 @@ RAG 就是将模型触及不到知识作为模型的知识库每次回答问题�
 
 RAG（Retrieval-Augmented Generation，检索增强生成）
 
-![image-6.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/1fa0073b7c724e25a42357ecb78c902c~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736687&x-orig-sign=5mZ3mXT650luxfzb30ugZ4Eiy2I%3D)
+![RAG 检索增强生成的完整流程](/ai/langchain/rag-pipeline-overview.png)
 
 *   解析语料内容，将非结构化的数据转换为结构化数据 **Loader**
 *   通过语义或者字符等手段对结构化数据进行拆分 **Chunk**
@@ -206,7 +206,7 @@ LangChain [切分方案实例](https://reference.langchain.com/python/langchain-
 *   `add_start_index` 默认 false 是否在元数据中包含索引
 *   `strip_whitespace` 默认 true 是否去除开头和结尾的空格
 
-![image.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/9d5e3e75a8e445c4a38fa8db0fe36e21~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736687&x-orig-sign=GevhE1LdyMJPJex0dlkLu9HCckU%3D)
+![文本切割的 chunk_size 与 chunk_overlap](/ai/langchain/text-splitter-chunk-overlap.png)
 
 常用方法
 

@@ -54,7 +54,7 @@ from langchain_deepseek import ChatDeepSeek
 
 ### 通用连接方案 init\_chat\_model
 
-![01.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/080380827b114b01a5bebe9133375c13~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736467&x-orig-sign=dkrv%2BZHZ%2FknltdWoxsMcc080CX4%3D)
+![init_chat_model 统一初始化接口流程](/ai/langchain/init-chat-model-flow.png)
 
 `init_chat_model` 则是对话连接的封装，相当于做了整合，根据模型内部自动选择对话模型去完成连接；如果某些模型提供了 openai 的适配版本也可以使用 openai 来驱动不同的模型。
 

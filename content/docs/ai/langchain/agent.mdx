@@ -5,7 +5,7 @@ description: Agent 创建、工具配置、结构化响应与流式输出
 
 Agent 是当前应用开发的最终形态；与前面模型调用不同，Agent 可以自主规划调用工具，然后再返回内容
 
-![image-1.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/70d3ae0bccfd4c4fb37195141ebf2a78~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=%2Fx19yMWlVK%2BXpzOqk15CzMUgmx0%3D)
+![Agent 架构：工具、记忆、规划决策与行动](/ai/langchain/agent-architecture.png)
 
 通过 `create_agent` 创建智能体
 
@@ -362,19 +362,19 @@ for chunk in result:
 
 `values` 输出是循序渐进的，每一步都会带上之前所有的内容
 
-![image-2.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/db0f47e266504065b18006ba7fe211b1~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=IDoK3WWdEhpYESea2ZvP5bHFGeE%3D)
+![values 输出：逐步累积全部消息](/ai/langchain/stream-values-output.png)
 
 **`updates` 默认值**，每次输出只显示增量的变化，并且会在外层套一个对象告知是 `model | tool`
 
-![image-3.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/cf1e7ce9941c405b938c92722bb81fc0~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=7tkuXoP2bqnSbPONXmLtg%2BQ%2BvrE%3D)
+![updates 输出：仅显示增量变化](/ai/langchain/stream-updates-output.png)
 
 `tasks` 会带上的输入和对应错误消息
 
-![image.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/c2b8ba0d0adf46bcac931286c69211f6~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=YBh0S48mtgSf9ViruSHcUGERnX4%3D)
+![tasks 输出：包含输入和错误信息](/ai/langchain/stream-tasks-output.png)
 
 `debug` 会带上每次输出的步骤、时间、类型
 
-![image.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/3c8bd17bc05543c5953d709266374996~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=73ptsrMV52%2FRch01Y63YaM7DLOY%3D)
+![debug 输出：步骤、时间与类型](/ai/langchain/stream-debug-output.png)
 
 `checkpoints` 每次的输出都会把 `messages` 添加到相关的 `value.messages` 中。
 
@@ -396,4 +396,4 @@ result = agent.stream(
 )
 ```
 
-![image.png](https://p0-xtjj-private.juejin.cn/tos-cn-i-73owjymdk6/71e3df71ac7049538c4303095f95e080~tplv-73owjymdk6-jj-mark-v1:0:0:0:0:5o6Y6YeR5oqA5pyv56S-5Yy6IEAgNjXlsoHpgIDkvJFDb2Rlcg==:q75.awebp?policy=eyJ2bSI6MywidWlkIjoiMTE2OTUzNjEwNDUzMjgyOSJ9&rk3s=f64ab15b&x-orig-authkey=f32326d3454f2ac7e96d3d06cdbb035152127018&x-orig-expires=1790736577&x-orig-sign=XZpDONZNiPRUsl9%2B8JAlAlVZCOk%3D)
+![checkpoints 输出：messages 写入 values](/ai/langchain/stream-checkpoints-output.png)
